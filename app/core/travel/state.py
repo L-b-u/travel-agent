@@ -87,9 +87,13 @@ class TravelState(TypedDict, total=False):
     # ---- 安全审查 ----
     safety_result: Dict[str, Any]
 
-    # ---- 安全审查信号（标记需人工确认，当前未接 interrupt 中断）----
+    # ---- HITL 人工确认（safety_review → human_gate 中断/resume）----
     requires_confirmation: bool
     confirmation_items: List[str]
+    confirmation_decision: Dict[str, Any]  # {"approved": bool, "note": str}
+
+    # ---- 流程终态 ----
+    status: Optional[str]  # "completed" / "cancelled" / None(进行中)
 
     # ---- 错误信息 ----
     error: Optional[str]

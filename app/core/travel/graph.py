@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
+from langgraph.types import Command, interrupt
 from loguru import logger
 
 from app.core.travel.agents import (
@@ -66,7 +67,7 @@ def build_travel_graph() -> StateGraph:
         _route_after_safety,
         {"gate": "human_gate", "end": END},
     )
-    workflow.add_node("human_gate", _human_gate_placeholder)
+    workflow.add_node("human_gate", human_gate_node)
     workflow.add_edge("human_gate", END)
 
     memory = MemorySaver()
@@ -81,9 +82,61 @@ def _route_after_safety(state: TravelState) -> str:
     return "gate" if state.get("requires_confirmation") else "end"
 
 
-async def _human_gate_placeholder(state: TravelState) -> Dict[str, Any]:
-    """人工确认门（占位）：B5 阶段替换为 interrupt() 实现。"""
-    return {}
+async def human_gate_node(state: TravelState) -> Dict[str, Any]:
+    """
+    人工确认门（HITL）。
+
+    安全审查发现需确认项时，通过 interrupt() 中断图执行，将待确认事项抛给
+    调用方；调用方以 Command(resume={"approved": bool, "note": str}) 恢复。
+    resume 后本节点从头重跑，第二次执行时 interrupt() 返回用户决定。
+
+    - 批准：行程照常交付，追加"已人工确认"记录；
+    - 拒绝：行程替换为取消说明（明确未执行任何敏感操作），status="cancelled"。
+    """
+    if not state.get("requires_confirmation"):
+        return {"status": "completed"}
+
+    decision = interrupt({
+        "type": "safety_confirmation",
+        "question": "行程包含需要你确认的操作请求，确认后才会继续",
+        "items": state.get("confirmation_items", []),
+    })
+
+    # 兼容 bool / dict 两种恢复值
+    if isinstance(decision, dict):
+        approved = bool(decision.get("approved"))
+        note = str(decision.get("note", ""))
+    else:
+        approved = bool(decision)
+        note = ""
+
+    logger.info("人工确认结果: approved={}, note={}", approved, note)
+
+    if approved:
+        stamp = (
+            "\n\n---\n\n> ✅ **人工确认记录**：以上请求中的敏感操作已由用户确认。\n"
+            "> 注意：系统不会代为执行任何资金/账户操作，相关事项请自行办理。\n"
+            + (f"> 用户备注：{note}\n" if note else "")
+        )
+        return {
+            "confirmation_decision": {"approved": True, "note": note},
+            "itinerary": state.get("itinerary", "") + stamp,
+            "status": "completed",
+        }
+
+    items = state.get("confirmation_items", []) or ["未明确列出的事项"]
+    item_lines = "\n".join(f"- {i}" for i in items)
+    return {
+        "confirmation_decision": {"approved": False, "note": note},
+        "itinerary": (
+            "## ❌ 已按你的要求终止本次规划\n\n"
+            "以下操作涉及资金或账户安全，**系统不会也不会被授权代为执行**：\n\n"
+            f"{item_lines}\n\n"
+            "如仍需旅行规划建议，请去掉上述敏感操作后重新描述你的需求。\n"
+            + (f"\n> 用户备注：{note}\n" if note else "")
+        ),
+        "status": "cancelled",
+    }
 
 
 # 全局单例
@@ -140,6 +193,8 @@ async def run_travel_agent(
         "safety_result": {},
         "requires_confirmation": False,
         "confirmation_items": [],
+        "confirmation_decision": {},
+        "status": None,
         "error": None,
     }
 
@@ -148,12 +203,15 @@ async def run_travel_agent(
     t0 = time.perf_counter()
     try:
         final_state = await graph.ainvoke(initial_state, config)
-        logger.info(
-            "Travel Agent 流程完成: session={}, 模式={}, 总耗时 {:.2f}s",
-            session_id,
-            final_state.get("research_meta", {}).get("mode", "-"),
-            time.perf_counter() - t0,
-        )
+        if pending_confirmation(final_state):
+            logger.info("流程中断等待人工确认: session={}", session_id)
+        else:
+            logger.info(
+                "Travel Agent 流程完成: session={}, 模式={}, 总耗时 {:.2f}s",
+                session_id,
+                final_state.get("research_meta", {}).get("mode", "-"),
+                time.perf_counter() - t0,
+            )
         return final_state
     except Exception as e:
         logger.exception("Travel Agent 流程异常: {}", e)
@@ -162,6 +220,35 @@ async def run_travel_agent(
             "error": str(e),
             "itinerary": f"## 抱歉，旅行规划过程中出现错误\n\n错误信息：{e}\n\n请稍后重试。",
         }
+
+
+async def resume_travel_agent(
+    session_id: str,
+    decision: Dict[str, Any],
+    llm: Any = None,
+) -> Dict[str, Any]:
+    """
+    恢复被人工确认中断的图执行。
+
+    Args:
+        session_id: 与中断时相同的会话 ID（checkpointer 按 thread_id 定位断点）
+        decision: {"approved": bool, "note": str}
+        llm: ModelRouter 实例（恢复执行通常不再需要，但保持接口一致）
+
+    Returns:
+        最终状态字典
+    """
+    graph = get_travel_graph()
+    config = {"configurable": {"thread_id": session_id, "llm": llm}}
+    logger.info("恢复 Travel Agent 流程: session={}, decision={}", session_id, decision)
+    final_state = await graph.ainvoke(Command(resume=decision), config)
+    logger.info("Travel Agent 流程恢复完成: session={}", session_id)
+    return final_state
+
+
+def pending_confirmation(state: Dict[str, Any]) -> bool:
+    """判断图是否正中断等待人工确认（ainvoke 返回值含 __interrupt__ 即在等待）。"""
+    return bool(state.get("__interrupt__"))
 
 
 # 全局单例
