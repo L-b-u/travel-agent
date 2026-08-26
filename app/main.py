@@ -33,8 +33,11 @@ def create_app() -> FastAPI:
 
     application = FastAPI(
         title="Travel Agent",
-        description="基于 LangGraph 的多 Agent 协作旅行规划系统",
-        version="0.1.0",
+        description=(
+            "LLM Agent 工程化实践：LangGraph 状态图编排 + ReAct Tool Calling "
+            "+ RAG 攻略检索 + HITL 安全确认 + Eval 评估体系"
+        ),
+        version="0.2.0",
         debug=settings.debug,
     )
     application.include_router(travel.router, prefix=settings.api_prefix)

@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+.idea
+.vscode
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+logs
+output
+*.egg-info
+.env
+tests
+frontend
+travel_agent.egg-info
