@@ -51,6 +51,11 @@ def create_app() -> FastAPI:
     else:
         logger.warning("LLM 路由器未注入，所有 LLM 节点将走规则兜底路径")
 
+    # 预热 RAG 索引（jieba 词典加载 + BM25 构建），避免首个请求承担 ~7s 冷启动
+    from app.core.travel.rag import get_retriever
+
+    logger.info("RAG 预热完成: {}", get_retriever().status)
+
     return application
 
 

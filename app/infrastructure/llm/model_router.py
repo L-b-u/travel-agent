@@ -39,6 +39,12 @@ class ModelConfig:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+def _is_bad_request(exc: Exception) -> bool:
+    """判断是否为 400 类参数错误（重试无意义，应切换实现方式）。"""
+    status = getattr(exc, "status_code", None)
+    return status == 400 or "invalid_request_error" in str(exc).lower()
+
+
 def _observability_callbacks() -> list[Any]:
     """构建可观测性回调列表。
 
@@ -177,9 +183,12 @@ class ModelRouter:
         """
         结构化输出：让 LLM 按 Pydantic Schema 返回解析好的对象。
 
-        基于 ChatOpenAI.with_structured_output（function calling 实现），
-        同样享受指数退避重试。供应商不支持结构化输出时抛出异常，
-        由调用方降级（如规则兜底解析）。
+        实现方式降级链：function_calling → json_mode。
+        不同 OpenAI 兼容网关支持度差异很大，实测两类典型拒绝：
+        - "This response_format type is unavailable now"：不支持 json_schema/response_format；
+        - "Thinking mode does not support this tool_choice"：思考型模型不允许强制指定工具。
+        遇到 400 类参数错误立即切换下一种方式；超时/限流按指数退避重试当前方式。
+        全部失败时抛出异常，由调用方降级（如规则兜底解析）。
 
         Args:
             messages: 消息列表
@@ -192,32 +201,55 @@ class ModelRouter:
         cfg = self._configs[0]
         last_error: Exception | None = None
 
-        for attempt in range(1, self._max_retries + 1):
-            try:
-                structured = self.chat_model.with_structured_output(schema, strict=False)
-                t0 = asyncio.get_event_loop().time()
-                result = await structured.ainvoke(messages, config=self._run_config())
-                duration_ms = (asyncio.get_event_loop().time() - t0) * 1000
-                logger.info(
-                    "结构化输出 [{}]: schema={}, 耗时 {:.0f}ms",
-                    cfg.model_id, schema.__name__, duration_ms,
-                )
-                return result
-            except (TimeoutError, APIError, RateLimitError) as exc:
-                last_error = exc
-                logger.warning(
-                    "结构化输出 [{}] 第 {}/{} 次失败: {}",
-                    cfg.model_id, attempt, self._max_retries, exc,
-                )
-                if attempt < self._max_retries:
-                    await asyncio.sleep(min(2 ** (attempt - 1), 4))
-            except Exception as exc:
-                last_error = exc
-                logger.exception("结构化输出 [{}] 未预期错误，不重试: {}", cfg.model_id, exc)
-                break
+        for method in ("function_calling", "json_mode"):
+            for attempt in range(1, self._max_retries + 1):
+                try:
+                    if method == "json_mode":
+                        # json_mode 不支持 strict 参数
+                        structured = self.chat_model.with_structured_output(schema, method=method)
+                    else:
+                        structured = self.chat_model.with_structured_output(schema, strict=False, method=method)
+                    t0 = asyncio.get_event_loop().time()
+                    result = await structured.ainvoke(messages, config=self._run_config())
+                    duration_ms = (asyncio.get_event_loop().time() - t0) * 1000
+                    logger.info(
+                        "结构化输出 [{}]({}): schema={}, 耗时 {:.0f}ms",
+                        cfg.model_id, method, schema.__name__, duration_ms,
+                    )
+                    return result
+                except (APIError, RateLimitError) as exc:
+                    last_error = exc
+                    # 400 参数类错误重试无意义：换下一种实现方式
+                    if _is_bad_request(exc):
+                        logger.warning(
+                            "结构化输出 [{}] 不支持 {} 方式: {}",
+                            cfg.model_id, method, str(exc)[:120],
+                        )
+                        break
+                    logger.warning(
+                        "结构化输出 [{}]({}) 第 {}/{} 次失败: {}",
+                        cfg.model_id, method, attempt, self._max_retries, exc,
+                    )
+                    if attempt < self._max_retries:
+                        await asyncio.sleep(min(2 ** (attempt - 1), 4))
+                except TimeoutError as exc:
+                    last_error = exc
+                    logger.warning(
+                        "结构化输出 [{}]({}) 第 {}/{} 次超时",
+                        cfg.model_id, method, attempt, self._max_retries,
+                    )
+                    if attempt < self._max_retries:
+                        await asyncio.sleep(min(2 ** (attempt - 1), 4))
+                except Exception as exc:
+                    last_error = exc
+                    logger.exception("结构化输出 [{}] 未预期错误，不重试: {}", cfg.model_id, exc)
+                    return self._raise_structured(cfg.model_id, last_error)
 
+        return self._raise_structured(cfg.model_id, last_error)
+
+    def _raise_structured(self, model_id: str, last_error: Exception | None) -> T:
         raise RuntimeError(
-            f"结构化输出 [{cfg.model_id}] 重试 {self._max_retries} 次后仍不可用"
+            f"结构化输出 [{model_id}] 所有实现方式均不可用"
         ) from last_error
 
     # ------------------------------------------------------------

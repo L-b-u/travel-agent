@@ -65,7 +65,7 @@ class TravelPreferences(BaseModel):
         return self.model_dump()
 
 
-PREFERENCE_SYSTEM_PROMPT = """你是一个旅行偏好分析助手。从用户输入中提取结构化旅行偏好。
+PREFERENCE_SYSTEM_PROMPT = """你是一个旅行偏好分析助手。从用户输入中提取结构化旅行偏好，以 JSON 对象输出。
 
 规则：
 - destination 必须是中国城市名
