@@ -24,6 +24,9 @@ dependencies = [
     "python-dotenv==1.2.2",
     "httpx>=0.28.0",
     "loguru>=0.7.0",
+    # RAG：中文分词 + BM25 检索（纯 Python，无重型依赖）
+    "jieba>=0.42.1",
+    "rank-bm25>=0.2.2",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +35,16 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "ruff>=0.8.0",
 ]
+observability = [
+    "langfuse>=2.59.0",
+]
+frontend = [
+    "streamlit>=1.40.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -1,4 +1,4 @@
-﻿﻿﻿﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 行程合成 Agent：将所有信息汇总为结构化 Markdown 旅行计划。
 
