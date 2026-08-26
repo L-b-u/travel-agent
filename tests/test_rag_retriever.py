@@ -40,3 +40,10 @@ def test_tokenizer_filters_stopwords():
     tokens = _tokenize("我想去玩一下杭州的博物馆")
     assert "我" not in tokens and "想" not in tokens
     assert "杭州" in "".join(tokens) or "博物" in "".join(tokens)
+
+
+def test_no_overlap_query_returns_empty():
+    """未收录城市 + 零词法重叠的查询不应返回跨城噪声。"""
+    r = get_retriever()
+    hits = r.retrieve("量子物理实验室参观指南", city="南充", k=3)
+    assert hits == []

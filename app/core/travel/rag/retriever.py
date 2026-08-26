@@ -140,6 +140,9 @@ class TravelKnowledgeRetriever:
         results: list[dict[str, Any]] = []
         seen_sections: set = set()
         for idx in ranked:
+            if bm25_scores[idx] <= 0:
+                continue  # 与查询零词法重叠的块直接排除：
+                # 未收录城市的查询不应捞到跨城噪声（如南充的行程不该出现三亚海鲜攻略）
             c = self._chunks[idx]
             boost = 1.15 if (city and c.city == city) else 1.0
             score = fused[idx] * boost
