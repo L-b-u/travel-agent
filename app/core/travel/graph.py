@@ -65,7 +65,13 @@ def build_travel_graph() -> StateGraph:
     )
 
     # 规划主链路：偏好 → 研究（Tool Calling）→ 天气/预算并行 → 合成 → 输出侧审查
-    workflow.add_edge("collect_preferences", "research")
+    workflow.add_conditional_edges(
+        "collect_preferences",
+        _route_after_preferences,
+        {"research": "research", "clarify": "clarify"},
+    )
+    workflow.add_node("clarify", clarify_node)
+    workflow.add_edge("clarify", END)
     workflow.add_edge("research", "check_weather")
     workflow.add_edge("research", "estimate_budget")
     workflow.add_edge("check_weather", "synthesize")
@@ -94,6 +100,40 @@ def build_travel_graph() -> StateGraph:
 def _route_after_input_guard(state: TravelState) -> str:
     """入口守卫路由：有需确认项则进人工门。"""
     return "gate" if state.get("requires_confirmation") else "plan"
+
+
+def _route_after_preferences(state: TravelState) -> str:
+    """偏好收集后的路由。
+
+    输入侧风险被批准放行（input_confirmed）但未识别到显式目的地时，
+    不允许基于默认城市编造行程——转入澄清节点引导用户补充信息。
+    """
+    if state.get("input_confirmed") and not state.get("preferences", {}).get("destination_explicit"):
+        return "clarify"
+    return "research"
+
+
+async def clarify_node(state: TravelState) -> dict[str, Any]:
+    """
+    澄清节点：HITL 批准放行后，若请求缺少可规划的必要信息（无显式目的地），
+    交付引导性说明而非编造的默认行程。
+    """
+    dest = (state.get("preferences", {}) or {}).get("destination") or ""
+    logger.info("输入已确认但缺少目的地，输出澄清引导")
+    return {
+        "itinerary": (
+            "## ℹ️ 已确认——但还需要补充一点信息\n\n"
+            "你的请求已确认知悉：**系统不会代为执行购票、支付等资金操作**。\n\n"
+            "同时，描述中未能识别出明确的旅行目的地，无法直接生成行程规划。\n"
+            f"（未指定目的地时系统默认城市为「{dest}」，为避免误导本次不生成示例行程）\n\n"
+            "请补充以下信息后重新发起规划：\n"
+            "- 目的地城市（如：成都）\n"
+            "- 出行日期或天数\n"
+            "- 兴趣偏好（可选，如美食/博物馆/自然风光）\n\n"
+            "**示例**：这周末想去成都玩两天，预算1500元，喜欢美食和大熊猫"
+        ),
+        "status": "need_clarification",
+    }
 
 
 def _route_after_safety(state: TravelState) -> str:

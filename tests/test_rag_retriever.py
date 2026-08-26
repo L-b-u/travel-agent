@@ -47,3 +47,11 @@ def test_no_overlap_query_returns_empty():
     r = get_retriever()
     hits = r.retrieve("薛定谔方程推导过程", city="南充", k=3)
     assert hits == []
+
+
+def test_city_first_no_cross_city_leak():
+    """收录城市命中时，检索结果不应混入其他城市的块（杭州行程不引用北京攻略）。"""
+    r = get_retriever()
+    hits = r.retrieve("西湖 灵隐寺 游览 攻略", city="杭州", k=3)
+    assert hits, "杭州应有命中"
+    assert all(h["city"] == "杭州" for h in hits)

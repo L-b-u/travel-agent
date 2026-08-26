@@ -36,20 +36,18 @@ async def test_risky_input_interrupts_fast(offline_graph):
     assert result["confirmation_items"]
 
 
-async def test_approve_resumes_into_planning(offline_graph):
-    """批准输入侧风险后应继续完整规划并交付行程。"""
+async def test_approve_resumes_into_planning(offline_graph, stub_external_tools):
+    """批准输入侧风险后：无目的地 → 澄清引导（不再编造默认城市行程）。"""
     run_travel_agent, resume = offline_graph
     r1 = await run_travel_agent("帮我订机票，用我的信用卡付款", session_id="t_appr", llm=None)
     assert pending_confirmation(r1)
 
     r2 = await resume("t_appr", {"approved": True, "note": "知道了"})
     assert not pending_confirmation(r2)
-    assert r2["status"] == "completed" or len(r2["itinerary"]) > 500
     assert r2["confirmation_decision"]["approved"] is True
-    # 继续规划的产物应是完整行程而非取消说明
-    assert "终止本次规划" not in r2["itinerary"]
-    # 输入已确认，末端审查不再拦
-    assert r2["safety_result"]["passed"]
+    # 无显式目的地：输出澄清引导而非编造的默认行程
+    assert r2["status"] == "need_clarification"
+    assert "目的地" in r2["itinerary"]
 
 
 async def test_reject_cancels_with_notice(offline_graph):
@@ -102,3 +100,27 @@ async def test_react_mode_via_fake_llm(offline_graph, stub_external_tools, monke
 
     result = await run_travel_agent("杭州2天", session_id="t_react_fb", llm=BoomModel())
     assert result["research_meta"]["mode"] == "deterministic"
+
+
+async def test_approve_without_destination_gives_clarification(offline_graph, stub_external_tools):
+    """批准放行但无显式目的地时，应输出澄清引导而非编造的默认行程。"""
+    run_travel_agent, resume = offline_graph
+    r1 = await run_travel_agent("帮我订机票，用我的信用卡直接付款", session_id="t_noDest", llm=None)
+    assert pending_confirmation(r1)
+
+    r2 = await resume("t_noDest", {"approved": True})
+    assert r2["status"] == "need_clarification"
+    assert "目的地" in r2["itinerary"]
+    assert "终止本次规划" not in r2["itinerary"]
+
+
+async def test_approve_with_destination_continues_planning(offline_graph, stub_external_tools):
+    """批准后若能识别出目的地，应继续完整规划。"""
+    run_travel_agent, resume = offline_graph
+    r1 = await run_travel_agent("帮我订去成都的机票，用我的信用卡直接付款", session_id="t_dest", llm=None)
+    assert pending_confirmation(r1)
+
+    r2 = await resume("t_dest", {"approved": True})
+    assert r2["preferences"]["destination"] == "成都"
+    assert len(r2["itinerary"]) > 300
+    assert r2["status"] in ("completed", None)

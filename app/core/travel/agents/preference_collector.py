@@ -24,7 +24,10 @@ class TravelPreferences(BaseModel):
     校验器将 None/空串归一化为默认值，避免整体解析失败。
     """
 
-    destination: str = Field(default="杭州", description="目的地城市名（中国城市）")
+    destination: str | None = Field(
+        default=None,
+        description="目的地城市名；用户完全未提及时为 null，不要猜测默认城市",
+    )
     days: int = Field(default=2, ge=1, le=30, description="旅行天数")
     budget: float = Field(default=0, ge=0, description="总预算（元），0 表示无限制")
     interests: list[str] = Field(default_factory=list, description="兴趣类别（受控词表，供分类逻辑用）")
@@ -125,7 +128,7 @@ class TravelPreferences(BaseModel):
 PREFERENCE_SYSTEM_PROMPT = """你是一个旅行偏好分析助手。从用户输入中提取结构化旅行偏好，以 JSON 对象输出。
 
 规则：
-- destination 必须是中国城市名
+- destination 是用户明确提到的中国城市名；完全未提及任何城市时返回 null（不要猜测）
 - days 默认为 2，范围 1-30
 - budget 为 0 表示无限制
 - interests 从以下选择：景点、美食、博物馆、自然、历史、购物、宗教、建筑、公园、咖啡
@@ -206,6 +209,7 @@ async def collect_preferences_node(state: dict, config: RunnableConfig) -> dict[
 
     defaults = TravelPreferences().to_dict()
     if not user_input.strip():
+        _finalize_destination(defaults, explicit=False)
         return {"preferences": defaults, "error": "用户输入为空"}
 
     # LLM 通过 RunnableConfig 注入（ModelRouter，含 ainvoke_structured 能力）
@@ -226,6 +230,7 @@ async def collect_preferences_node(state: dict, config: RunnableConfig) -> dict[
             ]
             parsed: TravelPreferences = await llm.ainvoke_structured(messages, TravelPreferences, temperature=0.1)
             preferences = parsed.to_dict()
+            _finalize_destination(preferences, explicit=bool((preferences.get("destination") or "").strip()))
             logger.info("偏好收集完成(结构化输出): {}", preferences)
             return {"preferences": preferences}
         except Exception as e:
@@ -238,6 +243,19 @@ async def collect_preferences_node(state: dict, config: RunnableConfig) -> dict[
     return {"preferences": fallback_prefs}
 
 
+def _finalize_destination(prefs: dict[str, Any], *, explicit: bool) -> None:
+    """
+    归一化目的地并记录"是否为用户显式提及"。
+
+    destination 为空时回填默认城市（下游节点依赖非空值），
+    但 destination_explicit=False 会让 HITL 批准后的流程走澄清分支
+    而非基于默认城市编造行程。
+    """
+    if not (prefs.get("destination") or "").strip():
+        prefs["destination"] = "杭州"
+    prefs["destination_explicit"] = explicit
+
+
 def _fallback_parse(user_input: str, prefs: dict[str, Any]) -> None:
     """基于规则的偏好提取兜底。"""
     # 相对日期 → 具体出发日（如"这周末"→最近周六）
@@ -247,10 +265,13 @@ def _fallback_parse(user_input: str, prefs: dict[str, Any]) -> None:
 
     # 提取目的地（从已知城市列表匹配，避免误用默认值"杭州"）
     from app.core.travel.tools._poi_data import CITY_COORDS
+    matched = False
     for city in CITY_COORDS:
         if city in user_input:
             prefs["destination"] = city
+            matched = True
             break
+    _finalize_destination(prefs, explicit=matched)
 
     # 提取天数
     days_patterns = [
