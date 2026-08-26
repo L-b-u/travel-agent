@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """LLM 路由器：基于 LangChain ChatOpenAI 的统一 LLM 接入层。
 
 职责：
@@ -13,8 +12,9 @@ LLM 不可用时由各节点 try/except 自动降级到规则兜底。
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, TypeVar
 
 from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
@@ -147,7 +147,7 @@ class ModelRouter:
         for attempt in range(1, self._max_retries + 1):
             try:
                 return await self._try_model(cfg.model_id, messages, on_token=on_token, **kwargs)
-            except (APIError, RateLimitError, asyncio.TimeoutError) as exc:
+            except (TimeoutError, APIError, RateLimitError) as exc:
                 last_error = exc
                 logger.warning(
                     "模型 [{}] 第 {}/{} 次调用失败: {}",
@@ -203,7 +203,7 @@ class ModelRouter:
                     cfg.model_id, schema.__name__, duration_ms,
                 )
                 return result
-            except (APIError, RateLimitError, asyncio.TimeoutError) as exc:
+            except (TimeoutError, APIError, RateLimitError) as exc:
                 last_error = exc
                 logger.warning(
                     "结构化输出 [{}] 第 {}/{} 次失败: {}",

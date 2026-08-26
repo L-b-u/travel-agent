@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Travel Agent 评估器。
 
@@ -20,12 +19,12 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from loguru import logger
 
 from app.core.travel.graph import pending_confirmation, run_travel_agent
-from app.core.travel.output import save_itinerary, load_itinerary
+from app.core.travel.output import load_itinerary, save_itinerary
 
 
 @dataclass
@@ -35,7 +34,7 @@ class EvalCase:
     id: str
     type: str
     input: str
-    expected: Dict[str, Any]
+    expected: dict[str, Any]
 
 
 @dataclass
@@ -45,22 +44,22 @@ class EvalResult:
     case_id: str
     case_type: str
     passed: bool
-    details: Dict[str, Any] = field(default_factory=dict)
-    error: Optional[str] = None
+    details: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
 
 
 class EvalRunner:
     """评估运行器：基于最终输出的 Markdown 行程进行评估。"""
 
-    def __init__(self, cases_path: Optional[str] = None) -> None:
+    def __init__(self, cases_path: str | None = None) -> None:
         if cases_path is None:
             cases_path = str(Path(__file__).parent / "cases.json")
         self._cases = self._load_cases(cases_path)
-        self._results: List[EvalResult] = []
+        self._results: list[EvalResult] = []
 
     @staticmethod
-    def _load_cases(path: str) -> List[EvalCase]:
-        with open(path, "r", encoding="utf-8") as f:
+    def _load_cases(path: str) -> list[EvalCase]:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         return [
             EvalCase(id=item["id"], type=item["type"], input=item["input"],
@@ -68,7 +67,7 @@ class EvalRunner:
             for item in data
         ]
 
-    async def run(self, llm: Any = None, *, use_judge: bool = True) -> Dict[str, Any]:
+    async def run(self, llm: Any = None, *, use_judge: bool = True) -> dict[str, Any]:
         """运行全部评估用例。每条用例生成 Markdown 文件，从文件读取评估。
 
         Args:
@@ -153,7 +152,7 @@ class EvalRunner:
 
         return self._summarize()
 
-    def _evaluate_case(self, case: EvalCase, result: Dict[str, Any]) -> tuple[bool, Dict[str, Any]]:
+    def _evaluate_case(self, case: EvalCase, result: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
         """基于最终输出的 Markdown 行程评估。"""
         itinerary = result.get("itinerary", "")
         safety = result.get("safety_result", {})
@@ -164,8 +163,8 @@ class EvalRunner:
         # 否则"目的地/预算在行程中"会匹配到注释里的元信息自身，造成假阳性。
         itinerary = _strip_itinerary_header(itinerary)
 
-        checks: Dict[str, bool] = {}
-        details: Dict[str, Any] = {"itinerary_length": len(itinerary)}
+        checks: dict[str, bool] = {}
+        details: dict[str, Any] = {"itinerary_length": len(itinerary)}
 
         # ============================================================
         # 通用检查：所有非安全边界类都评估行程文档质量
@@ -280,7 +279,7 @@ class EvalRunner:
 
         return passed, details
 
-    def _summarize(self) -> Dict[str, Any]:
+    def _summarize(self) -> dict[str, Any]:
         """汇总评估结果。"""
         from app.core.travel.eval.judge import aggregate_judge_scores
 
@@ -289,7 +288,7 @@ class EvalRunner:
         failed = total - passed
         errors = sum(1 for r in self._results if r.error)
 
-        by_type: Dict[str, Dict[str, int]] = {}
+        by_type: dict[str, dict[str, int]] = {}
         for r in self._results:
             if r.case_type not in by_type:
                 by_type[r.case_type] = {"total": 0, "passed": 0}
@@ -319,7 +318,7 @@ class EvalRunner:
             "details": details_payload,
         }
 
-    def print_report(self, summary: Dict[str, Any]) -> None:
+    def print_report(self, summary: dict[str, Any]) -> None:
         """打印评估报告。"""
         print("\n" + "=" * 60)
         print("  Travel Agent Eval Report（基于 Markdown 行程输出评估）")
@@ -338,7 +337,8 @@ class EvalRunner:
         judge = summary.get("judge_summary", {})
         if judge.get("count"):
             print("-" * 60)
-            print(f"  LLM 评审 (rubric /25): 均分 {judge['avg_total']}，区间 [{judge['min_total']}, {judge['max_total']}]")
+            lo, hi = judge["min_total"], judge["max_total"]
+            print(f"  LLM 评审 (rubric /25): 均分 {judge['avg_total']}，区间 [{lo}, {hi}]")
             for dim, avg in judge.get("avg_by_dimension", {}).items():
                 print(f"    {dim}: {avg}")
         print("-" * 60)
@@ -353,7 +353,7 @@ class EvalRunner:
         print("=" * 60)
 
 
-async def run_eval(llm: Any = None) -> Dict[str, Any]:
+async def run_eval(llm: Any = None) -> dict[str, Any]:
     """便捷函数：运行评估并打印报告。"""
     runner = EvalRunner()
     summary = await runner.run(llm=llm)
@@ -367,7 +367,7 @@ async def run_eval(llm: Any = None) -> Dict[str, Any]:
 # ============================================================
 
 # 通用兴趣关键词（从用户输入提取兴趣，并检查行程是否体现）
-_INTEREST_KEYWORDS: Dict[str, List[str]] = {
+_INTEREST_KEYWORDS: dict[str, list[str]] = {
     "博物馆": ["博物馆", "博物院", "展馆", "展览"],
     "历史": ["历史", "古迹", "古城", "遗址", "文物", "文化"],
     "美食": ["美食", "小吃", "餐厅", "火锅", "特色菜", "当地菜", "美食街"],
@@ -384,7 +384,7 @@ _ITINERARY_VIOLATION_PHRASES = [
 ]
 
 
-def parse_itinerary_metadata(itinerary: str) -> Dict[str, Any]:
+def parse_itinerary_metadata(itinerary: str) -> dict[str, Any]:
     """从 Markdown 行程头部注释解析元信息。
 
     行程文件由 output.save_itinerary 生成，头部格式：
@@ -400,7 +400,7 @@ def parse_itinerary_metadata(itinerary: str) -> Dict[str, Any]:
 
     若文件无头部注释，返回空 dict（仅做通用结构评估）。
     """
-    metadata: Dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
 
     start = itinerary.find("<!--")
     end = itinerary.find("-->")
@@ -479,7 +479,7 @@ def _budget_split_count(itinerary: str) -> int:
     return sum(1 for kw in budget_keywords if kw in itinerary)
 
 
-def _check_structure(itinerary: str) -> tuple[Dict[str, bool], Dict[str, Any]]:
+def _check_structure(itinerary: str) -> tuple[dict[str, bool], dict[str, Any]]:
     """通用结构 + 合规性检查（行程正文，需已剥离头部注释）。
 
     返回 (checks, details)，供 EvalRunner._evaluate_case 与 evaluate_itinerary 共用，
@@ -490,8 +490,8 @@ def _check_structure(itinerary: str) -> tuple[Dict[str, bool], Dict[str, Any]]:
       - 有预算拆分：≥3 个预算科目关键词
       - 无越界操作：行程中无 "已为你预订" 等越界执行性表述
     """
-    checks: Dict[str, bool] = {}
-    details: Dict[str, Any] = {}
+    checks: dict[str, bool] = {}
+    details: dict[str, Any] = {}
 
     checks["行程完整"] = len(itinerary) > 500
     checks["有标题结构"] = "##" in itinerary
@@ -509,9 +509,9 @@ def _check_structure(itinerary: str) -> tuple[Dict[str, bool], Dict[str, Any]]:
     return checks, details
 
 
-def _extract_interests_from_input(user_input: str) -> List[str]:
+def _extract_interests_from_input(user_input: str) -> list[str]:
     """从用户输入文本中提取兴趣关键词。"""
-    interests: List[str] = []
+    interests: list[str] = []
     for interest, keywords in _INTEREST_KEYWORDS.items():
         if any(kw in user_input for kw in keywords):
             if interest not in interests:
@@ -532,7 +532,7 @@ def _int_to_chinese(n: int) -> str:
     units = ["", "十", "百", "千", "万"]
     s = str(n)
     length = len(s)
-    parts: List[str] = []
+    parts: list[str] = []
     for i, ch in enumerate(s):
         digit = int(ch)
         pos = length - 1 - i
@@ -547,14 +547,14 @@ def _int_to_chinese(n: int) -> str:
     return result.rstrip("零")
 
 
-def _chinese_number_variants(n: int) -> List[str]:
+def _chinese_number_variants(n: int) -> list[str]:
     """返回整数的中文表达变体（含"二/两"口语变体），用于宽松匹配。"""
     cn = _int_to_chinese(n)
     cn_alt = cn.replace("二", "两")
     return list(dict.fromkeys([cn, cn_alt]))  # 去重保序
 
 
-def evaluate_itinerary(itinerary: str) -> Dict[str, Any]:
+def evaluate_itinerary(itinerary: str) -> dict[str, Any]:
     """对任意 Markdown 行程文档做质量评估（不依赖测试用例）。
 
     评估维度：
@@ -584,8 +584,8 @@ def evaluate_itinerary(itinerary: str) -> Dict[str, Any]:
     # （否则"目的地/预算在行程中"等检查会匹配到注释里的元信息自身，失去意义）
     itinerary = _strip_itinerary_header(itinerary)
 
-    checks: Dict[str, bool] = {}
-    details: Dict[str, Any] = {"itinerary_length": len(itinerary)}
+    checks: dict[str, bool] = {}
+    details: dict[str, Any] = {"itinerary_length": len(itinerary)}
 
     # ============================================================
     # 1. 结构完整性 + 合规性（与 EvalRunner._evaluate_case 共用 _check_structure，

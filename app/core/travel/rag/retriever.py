@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 旅行攻略知识库检索器（轻量 RAG）。
 
@@ -19,7 +18,7 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 import jieba
 from loguru import logger
@@ -50,8 +49,8 @@ class TravelKnowledgeRetriever:
     """攻略知识库：启动时构建索引，retrieve() 返回最相关知识块。"""
 
     def __init__(self) -> None:
-        self._chunks: List[Chunk] = []
-        self._tokenized: List[List[str]] = []
+        self._chunks: list[Chunk] = []
+        self._tokenized: list[list[str]] = []
         self._bm25 = None
         # 向量通道状态：None=未启用；False=启用失败已降级；list=正常
         self._vectors: Any = None
@@ -80,9 +79,11 @@ class TravelKnowledgeRetriever:
                 self._vectors = False
                 logger.warning("Embedding 初始化失败，退化为纯 BM25 检索: {}", e)
 
-    def _embed_chunks(self) -> List[List[float]]:
+    def _embed_chunks(self) -> list[list[float]]:
         """对所有 chunk 批量向量化（OpenAI 兼容 embeddings 接口）。"""
         from langchain_openai import OpenAIEmbeddings
+
+        from app.config import get_settings
 
         settings = get_settings()
         embedder = OpenAIEmbeddings(
@@ -95,7 +96,7 @@ class TravelKnowledgeRetriever:
     # ------------------------------------------------------------
     # 检索
     # ------------------------------------------------------------
-    def retrieve(self, query: str, city: str = "", k: int = 4) -> List[Dict[str, Any]]:
+    def retrieve(self, query: str, city: str = "", k: int = 4) -> list[dict[str, Any]]:
         """
         检索最相关的 k 个知识块。
 
@@ -116,7 +117,7 @@ class TravelKnowledgeRetriever:
         bm25_scores = list(self._bm25.get_scores(q_tokens))
 
         # ---- 向量通道（可选）----
-        vector_scores: List[float] | None = None
+        vector_scores: list[float] | None = None
         if isinstance(self._vectors, list):
             try:
                 q_vec = self._query_vector(query)
@@ -136,7 +137,7 @@ class TravelKnowledgeRetriever:
         ranked = sorted(range(len(fused)), key=lambda i: fused[i], reverse=True)
 
         # 城市偏好：目标城市的块加权提升（而非硬过滤）
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         seen_sections: set = set()
         for idx in ranked:
             c = self._chunks[idx]
@@ -157,8 +158,10 @@ class TravelKnowledgeRetriever:
                 break
         return results
 
-    def _query_vector(self, query: str) -> List[float]:
+    def _query_vector(self, query: str) -> list[float]:
         from langchain_openai import OpenAIEmbeddings
+
+        from app.config import get_settings
 
         settings = get_settings()
         embedder = OpenAIEmbeddings(
@@ -169,7 +172,7 @@ class TravelKnowledgeRetriever:
         return embedder.embed_query(query)
 
     @property
-    def status(self) -> Dict[str, Any]:
+    def status(self) -> dict[str, Any]:
         """索引状态（可观测性）。"""
         mode = "unavailable"
         if self._bm25:
@@ -184,9 +187,9 @@ class TravelKnowledgeRetriever:
 # ============================================================
 # 模块级工具函数
 # ============================================================
-def _load_chunks(kb_dir: Path) -> List[Chunk]:
+def _load_chunks(kb_dir: Path) -> list[Chunk]:
     """加载 knowledge/ 下所有 .md，按 `## 章节` 切块。"""
-    chunks: List[Chunk] = []
+    chunks: list[Chunk] = []
     if not kb_dir.exists():
         return chunks
 
@@ -213,7 +216,7 @@ _STOPWORDS = {"的", "了", "和", "是", "在", "有", "个", "去", "要", "�
               "推荐", "介绍", "一下", "请问", "想", "玩", "旅游", "旅行"}
 
 
-def _tokenize(text: str) -> List[str]:
+def _tokenize(text: str) -> list[str]:
     """jieba 搜索引擎分词 + 停用词/单字过滤。"""
     tokens = jieba.cut_for_search(text.lower())
     return [
@@ -222,7 +225,7 @@ def _tokenize(text: str) -> List[str]:
     ]
 
 
-def _minmax(scores: List[float]) -> List[float]:
+def _minmax(scores: list[float]) -> list[float]:
     """min-max 归一化到 [0,1]；全等值时返回均匀 0.5。"""
     lo, hi = min(scores), max(scores)
     if hi - lo < 1e-9:
@@ -230,7 +233,7 @@ def _minmax(scores: List[float]) -> List[float]:
     return [(s - lo) / (hi - lo) for s in scores]
 
 
-def _cosine(a: List[float], b: List[float]) -> float:
+def _cosine(a: list[float], b: list[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(y * y for y in b))

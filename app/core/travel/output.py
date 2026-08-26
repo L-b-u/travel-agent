@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 行程输出工具：将 Travel Agent 生成的行程保存为 Markdown 文件。
 
@@ -10,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -22,7 +21,7 @@ def save_itinerary(
     itinerary: str,
     session_id: str = "default",
     user_input: str = "",
-    preferences: Optional[Dict[str, Any]] = None,
+    preferences: dict[str, Any] | None = None,
 ) -> str:
     """
     将行程保存为 Markdown 文件。
@@ -58,8 +57,8 @@ def save_itinerary(
 
     # 构建完整 Markdown 文件（含元信息注释）
     meta_lines = [
-        f"<!--",
-        f"Travel Agent 生成行程",
+        "<!--",
+        "Travel Agent 生成行程",
         f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"会话 ID: {session_id}",
         f"用户输入: {user_input}",
@@ -71,7 +70,7 @@ def save_itinerary(
         meta_lines.append(f"目的地: {dest}")
         meta_lines.append(f"天数: {days}")
         meta_lines.append(f"预算: {budget} 元")
-    meta_lines.append(f"-->")
+    meta_lines.append("-->")
 
     content = "\n".join(meta_lines) + "\n\n" + itinerary
 
@@ -92,7 +91,7 @@ def load_itinerary(filepath: str) -> str:
     Returns:
         行程 Markdown 文本（不含元信息注释）
     """
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, encoding="utf-8") as f:
         content = f.read()
 
     # 移除头部元信息注释

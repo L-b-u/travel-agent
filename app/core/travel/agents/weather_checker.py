@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 天气查询 Agent：查询目的地天气预报。
 """
@@ -6,7 +5,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict
+from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
@@ -16,7 +15,7 @@ from app.core.travel.tools._poi_data import find_city_coords
 from app.core.travel.tools.get_weather import get_weather_forecast
 
 
-async def check_weather_node(state: TravelState, config: RunnableConfig) -> Dict[str, Any]:
+async def check_weather_node(state: TravelState, config: RunnableConfig) -> dict[str, Any]:
     """
     节点 4a：天气查询（与预算并行）。
 

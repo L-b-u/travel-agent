@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 安全审查 Agent：检查用户输入和行程输出中的高风险操作。
 
@@ -16,7 +15,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List
+from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
@@ -58,7 +57,7 @@ MONEY_EXECUTION_PHRASES = [
 # ============================================================
 ACCOUNT_ACTION_PHRASES = [
     "帮我取消", "帮我退订", "帮我改签", "帮我退款",
-    "帮我办理签证", "帮我办签证", "代办签证",
+    "帮我办理", "帮我办签证", "代办签证",
     "帮我下单",
 ]
 
@@ -86,12 +85,12 @@ INFO_KEYWORDS = [
 ]
 
 
-def review_input(user_input: str) -> Dict[str, Any]:
+def review_input(user_input: str) -> dict[str, Any]:
     """输入侧审查：用户请求中的敏感凭证与代执行操作。"""
     input_lower = user_input.lower()
 
-    blocked: List[str] = []
-    confirmation_items: List[str] = []
+    blocked: list[str] = []
+    confirmation_items: list[str] = []
 
     # 敏感凭证关键词
     for keyword in SENSITIVE_INFO_KEYWORDS:
@@ -130,13 +129,13 @@ def review_input(user_input: str) -> Dict[str, Any]:
     }
 
 
-def review_output(itinerary: str) -> Dict[str, Any]:
+def review_output(itinerary: str) -> dict[str, Any]:
     """输出侧审查：行程文本中的越界表述与事务性提醒。"""
     text_lower = itinerary.lower()
 
-    blocked: List[str] = []
-    warnings: List[str] = []
-    confirmation_items: List[str] = []
+    blocked: list[str] = []
+    warnings: list[str] = []
+    confirmation_items: list[str] = []
 
     # 索要敏感凭证
     for keyword in SENSITIVE_INFO_KEYWORDS:
@@ -172,7 +171,7 @@ def review_output(itinerary: str) -> Dict[str, Any]:
     }
 
 
-async def input_guard_node(state: TravelState, config: RunnableConfig) -> Dict[str, Any]:
+async def input_guard_node(state: TravelState, config: RunnableConfig) -> dict[str, Any]:
     """
     入口守卫节点：在消耗任何 LLM/API 资源前拦截输入侧风险。
 
@@ -198,10 +197,10 @@ async def input_guard_node(state: TravelState, config: RunnableConfig) -> Dict[s
     }
 
 
-def review(user_input: str, itinerary: str) -> Dict[str, Any]:
+def review(user_input: str, itinerary: str) -> dict[str, Any]:
     """双侧合并审查（输入侧 + 输出侧），供测试与独立调用使用。"""
 
-    def _merge(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
+    def _merge(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
         return {
             "level": "confirmation_required" if (a["blocked_keywords"] or b["blocked_keywords"]) else "pass",
             "passed": a["passed"] and b["passed"],
@@ -214,7 +213,7 @@ def review(user_input: str, itinerary: str) -> Dict[str, Any]:
     return _merge(review_input(user_input), review_output(itinerary))
 
 
-async def safety_review_node(state: TravelState, config: RunnableConfig) -> Dict[str, Any]:
+async def safety_review_node(state: TravelState, config: RunnableConfig) -> dict[str, Any]:
     """
     节点：安全审查（流程末端）。
 
@@ -263,7 +262,7 @@ async def safety_review_node(state: TravelState, config: RunnableConfig) -> Dict
     }
 
 
-def _generate_summary(result: Dict[str, Any]) -> str:
+def _generate_summary(result: dict[str, Any]) -> str:
     """生成审查摘要。"""
     blocked = result["blocked_keywords"]
     warnings = result["warnings"]

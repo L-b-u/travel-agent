@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 行程合成 Agent：将所有信息汇总为结构化 Markdown 旅行计划。
 
@@ -9,7 +8,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Dict, List
+from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
@@ -75,7 +74,7 @@ ITINERARY_SYSTEM_PROMPT = """你是专业旅行规划师。请根据提供的旅
 - 所有价格标注"约"字，表示估算"""
 
 
-async def synthesize_node(state: TravelState, config: RunnableConfig) -> Dict[str, Any]:
+async def synthesize_node(state: TravelState, config: RunnableConfig) -> dict[str, Any]:
     """
     节点：行程合成。
 
@@ -120,12 +119,12 @@ async def synthesize_node(state: TravelState, config: RunnableConfig) -> Dict[st
 
 
 def _build_context(
-    prefs: Dict[str, Any],
-    pois: List[Dict[str, Any]],
-    routes: List[Dict[str, Any]],
-    weather: List[Dict[str, Any]],
-    budget: Dict[str, Any],
-    tips: List[Dict[str, Any]] | None = None,
+    prefs: dict[str, Any],
+    pois: list[dict[str, Any]],
+    routes: list[dict[str, Any]],
+    weather: list[dict[str, Any]],
+    budget: dict[str, Any],
+    tips: list[dict[str, Any]] | None = None,
 ) -> str:
     """构建 LLM 输入上下文。"""
     parts = []
@@ -173,7 +172,7 @@ def _build_context(
     return "\n\n".join(parts)
 
 
-def _append_tips_footer(itinerary: str, tips: List[Dict[str, Any]]) -> str:
+def _append_tips_footer(itinerary: str, tips: list[dict[str, Any]]) -> str:
     """行程尾部追加攻略引用来源（source grounding：标注信息出处）。"""
     if not tips:
         return itinerary
@@ -182,11 +181,11 @@ def _append_tips_footer(itinerary: str, tips: List[Dict[str, Any]]) -> str:
 
 
 def _template_generate(
-    prefs: Dict[str, Any],
-    pois: List[Dict[str, Any]],
-    routes: List[Dict[str, Any]],
-    weather: List[Dict[str, Any]],
-    budget: Dict[str, Any],
+    prefs: dict[str, Any],
+    pois: list[dict[str, Any]],
+    routes: list[dict[str, Any]],
+    weather: list[dict[str, Any]],
+    budget: dict[str, Any],
 ) -> str:
     """模板生成行程（LLM 不可用时的降级方案）。"""
     destination = prefs.get("destination", "目的地")
@@ -217,7 +216,7 @@ def _template_generate(
     ]
 
     # 按天组织 POI
-    daily_pois: List[List[Dict[str, Any]]] = []
+    daily_pois: list[list[dict[str, Any]]] = []
     chunk_size = max(3, len(pois) // days) if pois else 4
     for i in range(days):
         start = i * chunk_size
@@ -269,10 +268,10 @@ def _template_generate(
 
     # 注意事项
     lines.append("## ⚠️ 注意事项")
-    lines.append(f"1. 以上价格为估算，实际消费以当地为准")
-    lines.append(f"2. 建议提前查看景点开放时间，部分景点需预约")
-    lines.append(f"3. 出行前请关注当地天气预报，做好防晒/防雨准备")
-    lines.append(f"4. 保管好个人财物，注意人身安全")
+    lines.append("1. 以上价格为估算，实际消费以当地为准")
+    lines.append("2. 建议提前查看景点开放时间，部分景点需预约")
+    lines.append("3. 出行前请关注当地天气预报，做好防晒/防雨准备")
+    lines.append("4. 保管好个人财物，注意人身安全")
 
     return "\n".join(lines)
 

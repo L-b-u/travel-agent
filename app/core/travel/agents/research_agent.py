@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 研究 Agent：旅行信息的探索式收集（真正的 LLM Tool Calling 节点）。
 
@@ -18,7 +17,7 @@ side-channel 捕获器直接写入结构化通道，不依赖 LLM 复述，避�
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List
+from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
@@ -51,8 +50,8 @@ RESEARCH_SYSTEM_PROMPT = """你是旅行研究助理，负责为行程规划收�
 
 def _build_react_tools(
     amap_key: str,
-    capture: Dict[str, Any],
-    trace: List[Dict[str, Any]],
+    capture: dict[str, Any],
+    trace: list[dict[str, Any]],
 ) -> list:
     """
     构建给 ReAct Agent 用的 LLM 工具集。
@@ -67,9 +66,9 @@ def _build_react_tools(
     @tool
     async def search_pois(
         destination: str,
-        interests: List[str],
+        interests: list[str],
         limit: int = 8,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """搜索目的地的兴趣点（景点/美食/博物馆等）。返回名称、评分、坐标、地址、类别。
 
         Args:
@@ -86,7 +85,7 @@ def _build_react_tools(
             "api_key": amap_key,
         })
         # side-channel：按名称去重累积
-        pool: Dict[str, Dict[str, Any]] = capture.setdefault("pois", {})
+        pool: dict[str, dict[str, Any]] = capture.setdefault("pois", {})
         for poi in result:
             name = poi.get("name", "")
             if name and name not in pool:
@@ -108,7 +107,7 @@ def _build_react_tools(
         o_name: str = "",
         d_name: str = "",
         mode: str = "driving",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """估算两个地点之间的距离与通行时间。
 
         Args:
@@ -137,7 +136,7 @@ def _build_react_tools(
         return result
 
     @tool
-    async def search_travel_tips(city: str, query: str) -> List[Dict[str, Any]]:
+    async def search_travel_tips(city: str, query: str) -> list[dict[str, Any]]:
         """检索本地旅行攻略知识库，返回实用提示（交通、门票预约、避坑、健康提醒等）。
 
         Args:
@@ -161,7 +160,7 @@ def _build_react_tools(
     return [search_pois, estimate_route_by_coords, search_travel_tips]
 
 
-async def research_node(state: TravelState, config: RunnableConfig) -> Dict[str, Any]:
+async def research_node(state: TravelState, config: RunnableConfig) -> dict[str, Any]:
     """
     节点 2：研究（替代原 POI 搜索 + 路线规划两个节点）。
 
@@ -188,7 +187,7 @@ async def _research_with_agent(
     state: TravelState,
     config: RunnableConfig,
     llm: Any,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """ReAct 主路径：LLM 决策工具调用，结果 side-channel 捕获。"""
     from langgraph.prebuilt import create_react_agent
 
@@ -198,8 +197,8 @@ async def _research_with_agent(
     days = preferences.get("days", 2)
     amap_key = get_settings().amap_api_key
 
-    capture: Dict[str, Any] = {}
-    trace: List[Dict[str, Any]] = []
+    capture: dict[str, Any] = {}
+    trace: list[dict[str, Any]] = []
     tools = _build_react_tools(amap_key, capture, trace)
 
     agent = create_react_agent(
@@ -252,10 +251,10 @@ async def _research_with_agent(
     }
 
 
-def _dedup_tips(hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _dedup_tips(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """按引用来源去重（Agent 可能多次查询命中同一章节）。"""
     seen: set = set()
-    result: List[Dict[str, Any]] = []
+    result: list[dict[str, Any]] = []
     for h in hits:
         key = h.get("citation", "")
         if key and key not in seen:
@@ -266,9 +265,9 @@ def _dedup_tips(hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def _fetch_tips_deterministic(
     destination: str,
-    interests: List[str],
+    interests: list[str],
     query_hint: str = "",
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """确定性兜底路径的攻略检索：用户原话 + 目的地直查知识库。"""
     try:
         from app.core.travel.rag import get_retriever
@@ -284,10 +283,10 @@ def _fetch_tips_deterministic(
 
 async def _research_deterministic(
     destination: str,
-    interests: List[str],
+    interests: list[str],
     days: int,
     query_hint: str = "",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     确定性兜底路径：原 POI 搜索 + 贪心路线规划逻辑收编于此。
 
@@ -295,7 +294,7 @@ async def _research_deterministic(
     query_hint（用户原话）作为攻略检索查询，比兴趣词更能命中具体关切（如高反、预约）。
     """
     amap_key = get_settings().amap_api_key
-    trace: List[Dict[str, Any]] = []
+    trace: list[dict[str, Any]] = []
 
     # ---- 1. 攻略检索（不依赖网络 API，离线可用）----
     tips = _fetch_tips_deterministic(destination, interests, query_hint)
@@ -339,7 +338,7 @@ async def _research_deterministic(
         }
 
     # ---- 2. 贪心按天分组（每天 2-4 个）----
-    daily_pois: List[List[Dict[str, Any]]] = []
+    daily_pois: list[list[dict[str, Any]]] = []
     pois_per_day = min(4, max(2, len(pois) // days))
     remaining = list(pois)
     for _day in range(days):
@@ -355,7 +354,7 @@ async def _research_deterministic(
         day_idx += 1
 
     # ---- 3. 批量估算每日路线 ----
-    all_routes: List[Dict[str, Any]] = []
+    all_routes: list[dict[str, Any]] = []
     for day, day_group in enumerate(daily_pois):
         if len(day_group) < 2:
             continue

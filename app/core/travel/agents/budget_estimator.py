@@ -1,11 +1,10 @@
-# -*- coding: utf-8 -*-
 """
 预算估算 Agent：估算旅行总费用。
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
@@ -14,7 +13,7 @@ from app.core.travel.state import TravelState
 from app.core.travel.tools.estimate_budget import estimate_budget
 
 
-async def estimate_budget_node(state: TravelState, config: RunnableConfig) -> Dict[str, Any]:
+async def estimate_budget_node(state: TravelState, config: RunnableConfig) -> dict[str, Any]:
     """
     节点 4b：预算估算（与天气并行）。
 

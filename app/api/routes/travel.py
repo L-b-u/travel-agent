@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Travel Agent API 路由。
 
 - POST /travel/plan          同步规划（可能返回待确认状态）
@@ -10,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -28,7 +27,7 @@ from app.models.travel_schemas import ConfirmRequest, TravelPlanResponse, Travel
 router = APIRouter(prefix="/travel", tags=["travel"])
 
 # 全局 LLM 引用（由 main.py 注入）
-_llm_router: Optional[ModelRouter] = None
+_llm_router: ModelRouter | None = None
 
 
 def set_llm_router(llm_router: ModelRouter) -> None:
@@ -37,12 +36,12 @@ def set_llm_router(llm_router: ModelRouter) -> None:
     _llm_router = llm_router
 
 
-def get_llm_router() -> Optional[ModelRouter]:
+def get_llm_router() -> ModelRouter | None:
     """获取注入的 LLM 路由器（未配置时为 None，节点走规则兜底）。"""
     return _llm_router
 
 
-def _build_response(result: Dict[str, Any], session_id: str) -> TravelPlanResponse:
+def _build_response(result: dict[str, Any], session_id: str) -> TravelPlanResponse:
     """把图最终状态转成 API 响应模型。"""
     interrupted = pending_confirmation(result)
     status = "pending_confirmation" if interrupted else result.get("status") or "completed"
@@ -59,7 +58,7 @@ def _build_response(result: Dict[str, Any], session_id: str) -> TravelPlanRespon
     )
 
 
-def _save_if_any(result: Dict[str, Any], session_id: str, user_input: str) -> None:
+def _save_if_any(result: dict[str, Any], session_id: str, user_input: str) -> None:
     """行程非空且流程已终态时保存为 Markdown 文件。"""
     itinerary = result.get("itinerary", "")
     if not itinerary:
@@ -190,7 +189,7 @@ async def plan_travel_stream(request: TravelRequest):
             while True:
                 try:
                     kind, payload = await asyncio.wait_for(queue.get(), timeout=15.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     if task.done():
                         break
                     yield ": keep-alive\n\n"

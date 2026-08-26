@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 偏好收集 Agent：将自然语言需求转为结构化偏好。
 
@@ -11,7 +10,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal
 
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
@@ -24,19 +23,19 @@ class TravelPreferences(BaseModel):
     destination: str = Field(default="杭州", description="目的地城市名（中国城市）")
     days: int = Field(default=2, ge=1, le=30, description="旅行天数")
     budget: float = Field(default=0, ge=0, description="总预算（元），0 表示无限制")
-    interests: List[str] = Field(default_factory=list, description="兴趣列表")
+    interests: list[str] = Field(default_factory=list, description="兴趣列表")
     companions: Literal["solo", "couple", "family", "friends"] = Field(
         default="solo", description="同行人类型",
     )
     accommodation: Literal["budget", "mid", "luxury"] = Field(
         default="mid", description="住宿偏好等级",
     )
-    start_date: Optional[str] = Field(default=None, description="出发日期 YYYY-MM-DD，未提及为 null")
+    start_date: str | None = Field(default=None, description="出发日期 YYYY-MM-DD，未提及为 null")
     notes: str = Field(default="", description="补充说明")
 
     @field_validator("interests", mode="before")
     @classmethod
-    def _normalize_interests(cls, v: Any) -> List[str]:
+    def _normalize_interests(cls, v: Any) -> list[str]:
         """兴趣归一化为受控词表，过滤无效项。"""
         allowed = {"景点", "美食", "博物馆", "自然", "历史", "购物", "宗教", "建筑", "公园", "咖啡"}
         alias = {
@@ -44,7 +43,7 @@ class TravelPreferences(BaseModel):
             "history": "历史", "shopping": "购物", "temple": "宗教",
             "architecture": "建筑", "park": "公园", "cafe": "咖啡",
         }
-        result: List[str] = []
+        result: list[str] = []
         if not isinstance(v, list):
             return result
         for item in v:
@@ -56,13 +55,13 @@ class TravelPreferences(BaseModel):
 
     @field_validator("start_date", mode="before")
     @classmethod
-    def _validate_start_date(cls, v: Any) -> Optional[str]:
+    def _validate_start_date(cls, v: Any) -> str | None:
         if v in (None, "", "null"):
             return None
         text = str(v)
         return text if re.match(r"^\d{4}-\d{2}-\d{2}$", text) else None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return self.model_dump()
 
 
@@ -79,7 +78,7 @@ PREFERENCE_SYSTEM_PROMPT = """你是一个旅行偏好分析助手。从用户�
 - start_date: 用户说"今天"则用当前日期，"明天"用当前日期+1，未提及则 null"""
 
 
-async def collect_preferences_node(state: dict, config: RunnableConfig) -> Dict[str, Any]:
+async def collect_preferences_node(state: dict, config: RunnableConfig) -> dict[str, Any]:
     """
     节点 1：偏好收集。
 
@@ -116,7 +115,7 @@ async def collect_preferences_node(state: dict, config: RunnableConfig) -> Dict[
     return {"preferences": fallback_prefs}
 
 
-def _fallback_parse(user_input: str, prefs: Dict[str, Any]) -> None:
+def _fallback_parse(user_input: str, prefs: dict[str, Any]) -> None:
     """基于规则的偏好提取兜底。"""
     # 提取目的地（从已知城市列表匹配，避免误用默认值"杭州"）
     from app.core.travel.tools._poi_data import CITY_COORDS

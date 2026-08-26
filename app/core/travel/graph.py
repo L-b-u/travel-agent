@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 LangGraph 状态图：编排 Travel Agent 流水线。
 
@@ -22,7 +21,7 @@ LangGraph 状态图：编排 Travel Agent 流水线。
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
@@ -114,7 +113,7 @@ def _route_after_gate(state: TravelState) -> str:
     return "end"
 
 
-async def human_gate_node(state: TravelState) -> Dict[str, Any]:
+async def human_gate_node(state: TravelState) -> dict[str, Any]:
     """
     人工确认门（HITL）。
 
@@ -183,7 +182,7 @@ async def human_gate_node(state: TravelState) -> Dict[str, Any]:
 
 
 # 全局单例
-_travel_graph: Optional[StateGraph] = None
+_travel_graph: StateGraph | None = None
 
 
 def get_travel_graph() -> StateGraph:
@@ -205,7 +204,7 @@ async def run_travel_agent(
     session_id: str = "default",
     llm: Any = None,
     token_callback: Any = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     运行 Travel Agent 全流程。
 
@@ -278,9 +277,9 @@ async def run_travel_agent(
 
 async def resume_travel_agent(
     session_id: str,
-    decision: Dict[str, Any],
+    decision: dict[str, Any],
     llm: Any = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     恢复被人工确认中断的图执行。
 
@@ -294,13 +293,20 @@ async def resume_travel_agent(
     """
     graph = get_travel_graph()
     config = {"configurable": {"thread_id": session_id, "llm": llm}}
+
+    # 防御：无断点时 Command(resume=...) 会以空状态重跑全图（表现为"凭空规划行程"），
+    # 必须显式拒绝
+    snapshot = await graph.aget_state(config)
+    if not snapshot.values:
+        raise ValueError(f"会话 {session_id} 没有可恢复的断点")
+
     logger.info("恢复 Travel Agent 流程: session={}, decision={}", session_id, decision)
     final_state = await graph.ainvoke(Command(resume=decision), config)
     logger.info("Travel Agent 流程恢复完成: session={}", session_id)
     return final_state
 
 
-def pending_confirmation(state: Dict[str, Any]) -> bool:
+def pending_confirmation(state: dict[str, Any]) -> bool:
     """判断图是否正中断等待人工确认（ainvoke 返回值含 __interrupt__ 即在等待）。"""
     return bool(state.get("__interrupt__"))
 

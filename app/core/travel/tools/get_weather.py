@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 天气查询工具：Open-Meteo API。
 
@@ -10,14 +9,14 @@ Open-Meteo 免费天气 API：https://open-meteo.com/en/docs
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 from langchain_core.tools import tool
 from loguru import logger
 
 # 天气代码映射
-WMO_CODES: Dict[int, str] = {
+WMO_CODES: dict[int, str] = {
     0: "晴",
     1: "大部晴",
     2: "多云",
@@ -48,9 +47,9 @@ WMO_CODES: Dict[int, str] = {
 async def get_weather_forecast(
     lat: float,
     lon: float,
-    start_date: Optional[str] = None,
+    start_date: str | None = None,
     days: int = 3,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     获取目的地天气预报。
 
@@ -107,23 +106,34 @@ async def get_weather_forecast(
     if not dates:
         return _generate_fallback_weather(start, days)
 
+    def _daily_series(key: str, default: float) -> list:
+        """取每日序列，缺失时回退为等长默认值序列。"""
+        series = daily.get(key) or []
+        return series if len(series) == len(dates) else [default] * len(dates)
+
+    temp_max = _daily_series("temperature_2m_max", 0)
+    temp_min = _daily_series("temperature_2m_min", 0)
+    precip = _daily_series("precipitation_probability_max", 0)
+    wind = _daily_series("wind_speed_10m_max", 0)
+    codes = _daily_series("weather_code", 0)
+
     forecasts = []
     for i, d in enumerate(dates):
-        code = daily.get("weather_code", [0] * len(dates))[i] if i < len(daily.get("weather_code", [])) else 0
+        code = int(codes[i])
         forecasts.append({
             "date": d,
             "condition": WMO_CODES.get(code, "未知"),
-            "temp_max": daily.get("temperature_2m_max", [0] * len(dates))[i] if i < len(daily.get("temperature_2m_max", [])) else 0,
-            "temp_min": daily.get("temperature_2m_min", [0] * len(dates))[i] if i < len(daily.get("temperature_2m_min", [])) else 0,
-            "precipitation_prob": daily.get("precipitation_probability_max", [0] * len(dates))[i] if i < len(daily.get("precipitation_probability_max", [])) else 0,
-            "wind_speed": daily.get("wind_speed_10m_max", [0] * len(dates))[i] if i < len(daily.get("wind_speed_10m_max", [])) else 0,
+            "temp_max": temp_max[i],
+            "temp_min": temp_min[i],
+            "precipitation_prob": precip[i],
+            "wind_speed": wind[i],
             "source": "open-meteo",
         })
 
     return forecasts
 
 
-def _generate_fallback_weather(start_date: date, days: int) -> List[Dict[str, Any]]:
+def _generate_fallback_weather(start_date: date, days: int) -> list[dict[str, Any]]:
     """API 不可用时生成占位天气数据。"""
     forecasts = []
     for i in range(days):

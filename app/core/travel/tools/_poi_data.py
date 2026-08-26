@@ -1,12 +1,11 @@
-# -*- coding: utf-8 -*-
 """POI 降级数据库：中国主要城市知名景点。"""
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 # 中国主要城市坐标
-CITY_COORDS: Dict[str, Dict[str, float]] = {
+CITY_COORDS: dict[str, dict[str, float]] = {
     "杭州": {"lat": 30.2741, "lon": 120.1551},
     "北京": {"lat": 39.9042, "lon": 116.4074},
     "上海": {"lat": 31.2304, "lon": 121.4737},
@@ -127,7 +126,7 @@ CITY_COORDS: Dict[str, Dict[str, float]] = {
 }
 
 # 知名景点降级数据库
-FALLBACK_POIS: Dict[str, List[Dict[str, Any]]] = {
+FALLBACK_POIS: dict[str, list[dict[str, Any]]] = {
     "杭州": [
         {"name": "西湖", "lat": 30.2375, "lon": 120.1408, "rating": 4.8, "category": "interesting_places"},
         {"name": "灵隐寺", "lat": 30.2430, "lon": 120.1010, "rating": 4.7, "category": "religion"},
@@ -563,7 +562,7 @@ FALLBACK_POIS: Dict[str, List[Dict[str, Any]]] = {
 }
 
 
-def find_city_coords(destination: str) -> Optional[Dict[str, float]]:
+def find_city_coords(destination: str) -> dict[str, float] | None:
     """从目的地名称匹配城市坐标。"""
     if destination in CITY_COORDS:
         return CITY_COORDS[destination]

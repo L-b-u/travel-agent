@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 预算估算工具：基于规则 + 城市物价水平。
 
@@ -8,12 +7,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 from langchain_core.tools import tool
 
 # 城市消费水平指数（以杭州为基准 1.0）
-CITY_PRICE_INDEX: Dict[str, float] = {
+CITY_PRICE_INDEX: dict[str, float] = {
     "杭州": 1.0, "北京": 1.3, "上海": 1.4, "广州": 1.1, "深圳": 1.3,
     "成都": 0.85, "西安": 0.8, "南京": 0.95, "重庆": 0.8, "武汉": 0.8,
     "苏州": 0.95, "厦门": 1.0, "长沙": 0.75, "青岛": 0.9, "大理": 0.7,
@@ -58,11 +57,11 @@ TRANSPORT_BASE = {
 def estimate_budget(
     destination: str,
     days: int,
-    routes: List[Dict[str, Any]],
+    routes: list[dict[str, Any]],
     accommodation_level: str = "mid",
     persons: int = 1,
     total_budget: float = 0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     估算旅行预算。
 
@@ -105,7 +104,7 @@ def estimate_budget(
     tickets = round(tickets, 0)
     total = transport + accommodation + food + tickets
 
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "transport": transport,
         "accommodation": accommodation,
         "food": food,

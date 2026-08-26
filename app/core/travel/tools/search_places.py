@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 POI 搜索工具：高德地图 API + 内置降级数据库。
 
@@ -8,7 +7,7 @@ POI 搜索工具：高德地图 API + 内置降级数据库。
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 import httpx
 from langchain_core.tools import tool
@@ -16,9 +15,8 @@ from loguru import logger
 
 from app.core.travel.tools._poi_data import FALLBACK_POIS
 
-
 # 高德搜索关键词映射（将用户兴趣映射为高德搜索关键词）
-AMAP_KEYWORD_MAP: Dict[str, str] = {
+AMAP_KEYWORD_MAP: dict[str, str] = {
     "博物馆": "博物馆",
     "museums": "博物馆",
     "museum": "博物馆",
@@ -51,11 +49,11 @@ AMAP_KEYWORD_MAP: Dict[str, str] = {
 @tool
 async def search_places(
     destination: str,
-    interests: List[str],
+    interests: list[str],
     radius: int = 5000,
     limit: int = 15,
     api_key: str = "",
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     搜索目的地景点和兴趣点（POI）。优先调用高德地图 API，失败时降级到内置数据库。
 
@@ -87,16 +85,16 @@ async def search_places(
 
 async def _search_via_amap(
     destination: str,
-    interests: List[str],
+    interests: list[str],
     limit: int,
     api_key: str,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """通过高德地图 POI 搜索 API 查询。
 
     高德 API 文档：https://lbs.amap.com/api/webservice/guide/api/search
     返回 location 格式为 "经度,纬度"（lon,lat）。
     """
-    all_pois: List[Dict[str, Any]] = []
+    all_pois: list[dict[str, Any]] = []
     seen: set = set()
 
     # 将兴趣映射为高德搜索关键词
@@ -182,7 +180,7 @@ async def _search_via_amap(
     return all_pois
 
 
-def _filter_fallback(destination: str, interests: List[str], limit: int) -> List[Dict[str, Any]]:
+def _filter_fallback(destination: str, interests: list[str], limit: int) -> list[dict[str, Any]]:
     """从内置数据库筛选 POI。"""
     city_pois = FALLBACK_POIS.get(destination)
 

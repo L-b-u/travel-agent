@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Travel Agent — FastAPI 应用入口。"""
 
 import os
@@ -7,8 +6,8 @@ from datetime import datetime
 from fastapi import FastAPI
 from loguru import logger
 
-from app.api.routes import travel
 from app.api.routes import eval as eval_routes
+from app.api.routes import travel
 from app.config import build_llm_router, get_settings
 
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 路线估算工具：高德地图路线规划 API + 直线距离降级。
 
@@ -9,7 +8,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List
+from typing import Any
 
 import httpx
 from langchain_core.tools import tool
@@ -30,11 +29,11 @@ def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 @tool
 async def estimate_route(
-    origin: Dict[str, Any],
-    destination: Dict[str, Any],
+    origin: dict[str, Any],
+    destination: dict[str, Any],
     mode: str = "driving",
     api_key: str = "",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     估算两点间路线（距离、耗时）。优先调用高德路线规划 API，失败时降级为直线距离。
 
@@ -87,7 +86,7 @@ async def _amap_route(
     d_lat: float, d_lon: float,
     mode: str,
     api_key: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """调用高德路线规划 API。
 
     高德坐标格式：经度,纬度（lon,lat）
@@ -138,10 +137,10 @@ async def _amap_route(
 
 @tool
 async def estimate_routes_batch(
-    waypoints: List[Dict[str, Any]],
+    waypoints: list[dict[str, Any]],
     mode: str = "driving",
     api_key: str = "",
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     批量估算连续路线（A→B→C→D）。
 

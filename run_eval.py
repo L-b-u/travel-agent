@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Travel Agent 评估脚本。
 
@@ -19,8 +18,8 @@ from pathlib import Path
 
 from loguru import logger
 
-from app.config import build_llm_router, get_settings
 from app.api.routes import travel
+from app.config import build_llm_router, get_settings
 from app.core.travel.eval.evaluator import EvalRunner
 
 

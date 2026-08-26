@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 LLM-as-Judge：用 LLM 按评分量表（rubric）对生成的行程打分。
 
@@ -12,7 +11,7 @@ LLM-as-Judge：用 LLM 按评分量表（rubric）对生成的行程打分。
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -48,14 +47,14 @@ class JudgeScores(BaseModel):
     actionability: int = Field(ge=0, le=5, description="信息完备 0-5")
     contingency: int = Field(ge=0, le=5, description="应变能力 0-5")
     clarity: int = Field(ge=0, le=5, description="表达质量 0-5")
-    reasons: Dict[str, str] = Field(default_factory=dict, description="各维度打分理由")
+    reasons: dict[str, str] = Field(default_factory=dict, description="各维度打分理由")
     verdict: str = Field(default="", description="整体评价与最大不足")
 
     @property
     def total(self) -> int:
         return sum(getattr(self, d) for d in DIMENSIONS)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         data = self.model_dump()
         data["total"] = self.total
         return data
@@ -63,10 +62,10 @@ class JudgeScores(BaseModel):
 
 async def judge_itinerary(
     user_input: str,
-    preferences: Dict[str, Any],
+    preferences: dict[str, Any],
     itinerary: str,
     llm: Any,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """
     对单份行程做 LLM 评审。
 
@@ -103,10 +102,10 @@ async def judge_itinerary(
         return None
 
 
-def aggregate_judge_scores(details_list: List[Dict[str, Any]]) -> Dict[str, Any]:
+def aggregate_judge_scores(details_list: list[dict[str, Any]]) -> dict[str, Any]:
     """汇总多条用例的评审分：均值 + 各维度均值。"""
     totals = []
-    dim_sums: Dict[str, List[int]] = {d: [] for d in DIMENSIONS}
+    dim_sums: dict[str, list[int]] = {d: [] for d in DIMENSIONS}
     for d in details_list:
         j = d.get("judge")
         if not j:
