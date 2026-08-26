@@ -39,11 +39,13 @@ RESEARCH_SYSTEM_PROMPT = """你是旅行研究助理，负责为行程规划收�
 1. search_pois(destination, interests, limit): 搜索景点/美食/博物馆等兴趣点，
    返回名称、评分、坐标、地址。坐标是后续估算路线的输入。
 2. estimate_route(o_lat, o_lon, d_lat, d_lon, mode): 估算两点间距离与耗时。
+3. search_travel_tips(city, query): 检索本地攻略知识库（交通/预约/避坑/高反等实用信息）。
 
 工作要求：
 - 目的地：{destination}；用户兴趣：{interests}；行程天数：{days} 天
-- 按兴趣逐一搜索（每个兴趣一次调用即可），总 POI 数量控制在 {poi_target} 个左右
-- 若搜索结果覆盖了多个相距较远的区域，可用 estimate_route 验证主要景点间的通勤时间
+- 先用 search_travel_tips 查一次目的地的关键注意事项（预约、避坑）
+- 按兴趣逐一调用 search_pois（每类兴趣一次即可），总 POI 数量控制在 {poi_target} 个左右
+- 若景点分布较散，可用 estimate_route 验证主要景点间的通勤时间
 - 收集完成后，用两三句话总结该目的地的游览布局特点（如集中片区、跨度），不要罗列全部数据"""
 
 
@@ -134,7 +136,29 @@ def _build_react_tools(
         })
         return result
 
-    return [search_pois, estimate_route_by_coords]
+    @tool
+    async def search_travel_tips(city: str, query: str) -> List[Dict[str, Any]]:
+        """检索本地旅行攻略知识库，返回实用提示（交通、门票预约、避坑、健康提醒等）。
+
+        Args:
+            city: 城市名，如 "丽江"
+            query: 想了解的主题，如 "雪山预约"、"海鲜避坑"
+        """
+        t0 = time.perf_counter()
+        from app.core.travel.rag import get_retriever
+
+        hits = get_retriever().retrieve(query, city=city, k=3)
+        # side-channel：引用来源单独收集（合成行程时标注信息来源）
+        capture.setdefault("tips", []).extend(hits)
+        trace.append({
+            "tool": "search_travel_tips",
+            "args": {"city": city, "query": query},
+            "returned": len(hits),
+            "duration_ms": round((time.perf_counter() - t0) * 1000),
+        })
+        return [{"citation": h["citation"], "text": h["text"]} for h in hits]
+
+    return [search_pois, estimate_route_by_coords, search_travel_tips]
 
 
 async def research_node(state: TravelState, config: RunnableConfig) -> Dict[str, Any]:
@@ -157,7 +181,7 @@ async def research_node(state: TravelState, config: RunnableConfig) -> Dict[str,
         except Exception as e:
             logger.warning("ReAct 研究失败，降级到确定性流水线: {}", e)
 
-    return await _research_deterministic(destination, interests, days)
+    return await _research_deterministic(destination, interests, days, query_hint=state.get("user_input", ""))
 
 
 async def _research_with_agent(
@@ -204,18 +228,20 @@ async def _research_with_agent(
 
     pois = list(capture.get("pois", {}).values())
     routes = capture.get("routes", [])
+    tips = _dedup_tips(capture.get("tips", []))
     summary = ""
     if result.get("messages"):
         last = result["messages"][-1]
         summary = getattr(last, "content", "") or ""
 
     logger.info(
-        "ReAct 研究完成: {} 个 POI, {} 条路线, {} 次工具调用, 耗时 {:.0f}ms",
-        len(pois), len(routes), len(trace), duration_ms,
+        "ReAct 研究完成: {} 个 POI, {} 条路线, {} 条攻略, {} 次工具调用, 耗时 {:.0f}ms",
+        len(pois), len(routes), len(tips), len(trace), duration_ms,
     )
     return {
         "pois": pois,
         "routes": routes,
+        "tips": tips,
         "research_summary": summary,
         "research_trace": trace,
         "research_meta": {
@@ -226,20 +252,55 @@ async def _research_with_agent(
     }
 
 
+def _dedup_tips(hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """按引用来源去重（Agent 可能多次查询命中同一章节）。"""
+    seen: set = set()
+    result: List[Dict[str, Any]] = []
+    for h in hits:
+        key = h.get("citation", "")
+        if key and key not in seen:
+            seen.add(key)
+            result.append({"citation": h["citation"], "text": h["text"]})
+    return result
+
+
+def _fetch_tips_deterministic(
+    destination: str,
+    interests: List[str],
+    query_hint: str = "",
+) -> List[Dict[str, Any]]:
+    """确定性兜底路径的攻略检索：用户原话 + 目的地直查知识库。"""
+    try:
+        from app.core.travel.rag import get_retriever
+
+        retriever = get_retriever()
+        query = f"{query_hint or destination} {' '.join(interests)}"
+        hits = retriever.retrieve(query, city=destination, k=3)
+        return [{"citation": h["citation"], "text": h["text"]} for h in hits]
+    except Exception as e:
+        logger.debug("攻略检索不可用: {}", e)
+        return []
+
+
 async def _research_deterministic(
     destination: str,
     interests: List[str],
     days: int,
+    query_hint: str = "",
 ) -> Dict[str, Any]:
     """
     确定性兜底路径：原 POI 搜索 + 贪心路线规划逻辑收编于此。
 
     不依赖 LLM：搜索按兴趣直查、按天贪心分组后批量估路线。
+    query_hint（用户原话）作为攻略检索查询，比兴趣词更能命中具体关切（如高反、预约）。
     """
     amap_key = get_settings().amap_api_key
     trace: List[Dict[str, Any]] = []
 
-    # ---- 1. POI 搜索 ----
+    # ---- 1. 攻略检索（不依赖网络 API，离线可用）----
+    tips = _fetch_tips_deterministic(destination, interests, query_hint)
+
+    # ---- 2. POI 搜索 ----
     t0 = time.perf_counter()
     try:
         pois = await search_places.ainvoke({
@@ -254,6 +315,7 @@ async def _research_deterministic(
         return {
             "pois": [],
             "routes": [],
+            "tips": tips,
             "research_summary": "",
             "research_trace": [],
             "research_meta": {"mode": "deterministic", "error": str(e)},
@@ -270,6 +332,7 @@ async def _research_deterministic(
         return {
             "pois": [],
             "routes": [],
+            "tips": tips,
             "research_summary": "",
             "research_trace": trace,
             "research_meta": {"mode": "deterministic"},
@@ -315,10 +378,11 @@ async def _research_deterministic(
         except Exception as e:
             logger.warning("第 {} 天路线计算失败: {}", day + 1, e)
 
-    logger.info("确定性研究完成: {} 个 POI, {} 条路线", len(pois), len(all_routes))
+    logger.info("确定性研究完成: {} 个 POI, {} 条路线, {} 条攻略", len(pois), len(all_routes), len(tips))
     return {
         "pois": pois,
         "routes": all_routes,
+        "tips": tips,
         "research_summary": "",
         "research_trace": trace,
         "research_meta": {"mode": "deterministic"},

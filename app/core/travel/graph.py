@@ -187,6 +187,7 @@ async def run_travel_agent(
         "research_summary": "",
         "research_trace": [],
         "research_meta": {},
+        "tips": [],
         "weather": [],
         "budget": {},
         "itinerary": "",

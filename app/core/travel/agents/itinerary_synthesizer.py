@@ -70,34 +70,37 @@ ITINERARY_SYSTEM_PROMPT = """你是专业旅行规划师。请根据提供的旅
 - 上午安排体力消耗大的景点，下午安排轻松的
 - 标注各景点间的交通方式和时间
 - 如果天气不佳，给出备选方案
+- 结合"本地攻略参考"中的门票预约、避坑提示完善每日安排和注意事项
 - 预算使用中文数字标注
 - 所有价格标注"约"字，表示估算"""
 
 
 async def synthesize_node(state: TravelState, config: RunnableConfig) -> Dict[str, Any]:
     """
-    节点 5：行程合成。
+    节点：行程合成。
 
-    汇总偏好、POI、路线、天气、预算，使用 LLM 生成 Markdown 旅行计划。
+    汇总偏好、POI、路线、天气、预算与 RAG 攻略摘录，使用 LLM 生成 Markdown 旅行计划。
     """
     preferences = state.get("preferences", {})
     pois = state.get("pois", [])
     routes = state.get("routes", [])
     weather = state.get("weather", [])
     budget = state.get("budget", {})
+    tips = state.get("tips", [])
 
     # 构建 LLM 上下文（LLM 通过 RunnableConfig 注入，不进 state）
     llm = config.get("configurable", {}).get("llm")
     if llm:
         t0 = time.perf_counter()
         try:
-            context = _build_context(preferences, pois, routes, weather, budget)
+            context = _build_context(preferences, pois, routes, weather, budget, tips)
             messages = [
                 {"role": "system", "content": ITINERARY_SYSTEM_PROMPT},
                 {"role": "user", "content": context},
             ]
             # 使用 LangChain ainvoke 接口
-            resp = await llm.ainvoke(messages, temperature=0.4)
+            token_cb = config.get("configurable", {}).get("token_callback")
+            resp = await llm.ainvoke(messages, temperature=0.4, on_token=token_cb)
             duration_ms = (time.perf_counter() - t0) * 1000
             itinerary = resp.content if hasattr(resp, "content") else str(resp)
             # 清理可能的 markdown 代码块包裹
@@ -107,13 +110,13 @@ async def synthesize_node(state: TravelState, config: RunnableConfig) -> Dict[st
                 "行程合成 LLM: {} 字符, 输入{}/输出{} token, 耗时 {:.0f}ms",
                 len(itinerary), usage.get("input_tokens", 0), usage.get("output_tokens", 0), duration_ms,
             )
-            return {"itinerary": itinerary}
+            return {"itinerary": _append_tips_footer(itinerary, tips)}
         except Exception as e:
             logger.warning("LLM 行程合成失败，使用模板生成: {} ({:.0f}ms)", e, (time.perf_counter() - t0) * 1000)
 
     # 降级：模板生成
     itinerary = _template_generate(preferences, pois, routes, weather, budget)
-    return {"itinerary": itinerary}
+    return {"itinerary": _append_tips_footer(itinerary, tips)}
 
 
 def _build_context(
@@ -122,6 +125,7 @@ def _build_context(
     routes: List[Dict[str, Any]],
     weather: List[Dict[str, Any]],
     budget: Dict[str, Any],
+    tips: List[Dict[str, Any]] | None = None,
 ) -> str:
     """构建 LLM 输入上下文。"""
     parts = []
@@ -137,7 +141,7 @@ def _build_context(
                 f"评分: {poi.get('rating', 'N/A')} "
                 f"坐标: ({poi.get('lat', 0):.4f}, {poi.get('lon', 0):.4f})"
             )
-        parts.append(f"## 景点列表\n" + "\n".join(poi_lines))
+        parts.append("## 景点列表\n" + "\n".join(poi_lines))
 
     if routes:
         route_lines = []
@@ -147,7 +151,7 @@ def _build_context(
                 f"{r.get('distance_km', 0)}km, "
                 f"{r.get('duration_min', 0)}分钟 ({r.get('mode', '')})"
             )
-        parts.append(f"## 路线信息\n" + "\n".join(route_lines))
+        parts.append("## 路线信息\n" + "\n".join(route_lines))
 
     if weather:
         weather_lines = []
@@ -157,12 +161,24 @@ def _build_context(
                 f"{w.get('temp_min', 0)}°C ~ {w.get('temp_max', 0)}°C, "
                 f"降水概率 {w.get('precipitation_prob', 0)}%"
             )
-        parts.append(f"## 天气预报\n" + "\n".join(weather_lines))
+        parts.append("## 天气预报\n" + "\n".join(weather_lines))
 
     if budget:
         parts.append(f"## 预算估算\n{json.dumps(budget, ensure_ascii=False, indent=2)}")
 
+    if tips:
+        tip_lines = [f"- [{t['citation']}] {t['text'][:200]}" for t in tips[:5]]
+        parts.append("## 本地攻略参考（知识库摘录，写注意事项时请结合这些信息）\n" + "\n".join(tip_lines))
+
     return "\n\n".join(parts)
+
+
+def _append_tips_footer(itinerary: str, tips: List[Dict[str, Any]]) -> str:
+    """行程尾部追加攻略引用来源（source grounding：标注信息出处）。"""
+    if not tips:
+        return itinerary
+    citations = "、".join(dict.fromkeys(t["citation"] for t in tips[:5]))
+    return itinerary + f"\n\n---\n\n> 📚 攻略参考来源：{citations}\n"
 
 
 def _template_generate(

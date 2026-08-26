@@ -74,6 +74,7 @@ class TravelState(TypedDict, total=False):
     research_summary: str          # Agent 对目的地布局的自然语言总结
     research_trace: List[Dict[str, Any]]  # 工具调用轨迹（工具/参数/耗时）
     research_meta: Dict[str, Any]  # {"mode": "react"|"deterministic", ...}
+    tips: List[Dict[str, Any]]     # RAG 攻略知识库检索结果（含引用来源）
 
     # ---- 天气信息 ----
     weather: List[Dict[str, Any]]
