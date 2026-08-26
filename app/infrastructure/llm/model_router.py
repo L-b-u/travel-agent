@@ -16,13 +16,18 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
+from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 from loguru import logger
 from openai import APIError, RateLimitError
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 T = TypeVar("T", bound=BaseModel)
+
+# 结构化输出的解析类错误：LLM 返回内容不符合 Schema（null/漏字段/多余文本），
+# 具有随机性，应重试而非放弃
+_STRUCTURED_PARSE_ERRORS = (OutputParserException, ValidationError)
 
 # 流式进度回调：每收到一个 chunk 调用一次，参数为"累积全文快照"
 # （传快照而非增量，重试导致的部分输出可被调用方直接覆盖）
@@ -220,33 +225,35 @@ class ModelRouter:
                         cfg.model_id, method, schema.__name__, duration_ms,
                     )
                     return result
-                except (APIError, RateLimitError) as exc:
+                except Exception as exc:
                     last_error = exc
-                    # 400 参数类错误重试无意义：换下一种实现方式
-                    if _is_bad_request(exc):
+
+                    # 分类处置：换方式 / 同方式重试 / 直接放弃
+                    if isinstance(exc, _STRUCTURED_PARSE_ERRORS):
+                        # 解析/校验失败（LLM 输出 null、漏字段等）有随机性，同方式重试
+                        delay = 0.5
+                        detail = str(exc)[:150]
+                    elif _is_bad_request(exc):
+                        # 400 参数类错误重试无意义：立即切换实现方式
                         logger.warning(
                             "结构化输出 [{}] 不支持 {} 方式: {}",
                             cfg.model_id, method, str(exc)[:120],
                         )
                         break
+                    elif isinstance(exc, (TimeoutError, APIError, RateLimitError)):
+                        # 瞬时错误：指数退避后同方式重试
+                        delay = min(2 ** (attempt - 1), 4)
+                        detail = str(exc)[:120]
+                    else:
+                        logger.exception("结构化输出 [{}] 未预期错误，不重试: {}", cfg.model_id, exc)
+                        return self._raise_structured(cfg.model_id, exc)
+
                     logger.warning(
-                        "结构化输出 [{}]({}) 第 {}/{} 次失败: {}",
-                        cfg.model_id, method, attempt, self._max_retries, exc,
-                    )
-                    if attempt < self._max_retries:
-                        await asyncio.sleep(min(2 ** (attempt - 1), 4))
-                except TimeoutError as exc:
-                    last_error = exc
-                    logger.warning(
-                        "结构化输出 [{}]({}) 第 {}/{} 次超时",
+                        "结构化输出 [{}]({}) 第 {}/{} 次失败({}): {}",
                         cfg.model_id, method, attempt, self._max_retries,
+                        type(exc).__name__, detail,
                     )
-                    if attempt < self._max_retries:
-                        await asyncio.sleep(min(2 ** (attempt - 1), 4))
-                except Exception as exc:
-                    last_error = exc
-                    logger.exception("结构化输出 [{}] 未预期错误，不重试: {}", cfg.model_id, exc)
-                    return self._raise_structured(cfg.model_id, last_error)
+                    await asyncio.sleep(delay)
 
         return self._raise_structured(cfg.model_id, last_error)
 

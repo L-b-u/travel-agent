@@ -202,3 +202,23 @@ def test_template_generate_includes_dates():
     assert "出行日期" in md and "8月29日（周六）" in md
     assert "### Day 1（8月29日 周六）" in md
     assert "### Day 2（8月30日 周日）" in md
+
+
+# ---------------------------------------------------------------------------
+# Schema 对 LLM null 输出的容错
+# ---------------------------------------------------------------------------
+
+def test_null_enum_fields_normalized_to_defaults():
+    """LLM 对未提及项常返回 null（线上真实故障），必须归一化而非校验失败。"""
+    p = TravelPreferences.model_validate({
+        "destination": "重庆", "days": 2, "budget": 1500,
+        "interests": ["美食"], "companions": None, "accommodation": None,
+        "start_date": "2026-08-29",
+    })
+    assert p.companions == "solo"
+    assert p.accommodation == "mid"
+
+
+def test_empty_string_enum_fields_normalized():
+    p = TravelPreferences(companions="", accommodation="  ")
+    assert p.companions == "solo" and p.accommodation == "mid"

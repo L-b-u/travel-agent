@@ -18,7 +18,11 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class TravelPreferences(BaseModel):
-    """结构化旅行偏好（LLM 结构化输出的目标 Schema）。"""
+    """结构化旅行偏好（LLM 结构化输出的目标 Schema）。
+
+    枚举字段必须容忍 LLM 返回 null：模型对未提及项常输出 null 而非省略键，
+    校验器将 None/空串归一化为默认值，避免整体解析失败。
+    """
 
     destination: str = Field(default="杭州", description="目的地城市名（中国城市）")
     days: int = Field(default=2, ge=1, le=30, description="旅行天数")
@@ -32,6 +36,20 @@ class TravelPreferences(BaseModel):
     )
     start_date: str | None = Field(default=None, description="出发日期 YYYY-MM-DD，未提及为 null")
     notes: str = Field(default="", description="补充说明")
+
+    @field_validator("companions", mode="before")
+    @classmethod
+    def _default_companions(cls, v: Any) -> Any:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "solo"
+        return v
+
+    @field_validator("accommodation", mode="before")
+    @classmethod
+    def _default_accommodation(cls, v: Any) -> Any:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "mid"
+        return v
 
     @field_validator("interests", mode="before")
     @classmethod
