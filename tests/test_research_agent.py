@@ -29,5 +29,5 @@ async def test_search_pois_dedupes_identical_calls(monkeypatch):
 
     assert call_count["n"] == 2      # 相同调用只打一次 API
     assert r1 == r2                  # 命中缓存返回同一结果
-    assert len(capture["pois"]) == 3
+    assert len(capture["pois"]) == 2 # 两次真实调用各产出 1 个不同 POI
     assert any(t.get("cached") for t in trace)  # 缓存命中在轨迹里可见
