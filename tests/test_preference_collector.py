@@ -256,7 +256,6 @@ def test_interests_raw_preserved():
 
 async def test_search_merges_raw_interests(stub_external_tools, monkeypatch):
     """研究阶段应把原话词并入搜索关键词（大熊猫→高德能搜到熊猫基地）。"""
-    import asyncio
     from types import SimpleNamespace
 
     import app.core.travel.agents.research_agent as ra
@@ -275,9 +274,6 @@ async def test_search_merges_raw_interests(stub_external_tools, monkeypatch):
     monkeypatch.setattr(ra, "search_places", SimpleNamespace(ainvoke=fake_search))
     monkeypatch.setattr(ra, "estimate_routes_batch", SimpleNamespace(ainvoke=fake_routes))
 
-    state = {"preferences": {"destination": "成都", "days": 2,
-                             "interests": ["美食"], "interests_raw": ["大熊猫"]},
-             "user_input": "成都看大熊猫"}
     result = await ra._research_deterministic(
         "成都", ["美食"], 2, query_hint="成都看大熊猫", raw_interests=["大熊猫"],
     )

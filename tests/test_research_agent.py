@@ -25,7 +25,7 @@ async def test_search_pois_dedupes_identical_calls(monkeypatch):
 
     r1 = await search_tool.ainvoke({"destination": "成都", "interests": ["美食"]})
     r2 = await search_tool.ainvoke({"destination": "成都", "interests": ["美食"]})  # 相同参数
-    r3 = await search_tool.ainvoke({"destination": "成都", "interests": ["博物馆"]})  # 不同参数
+    await search_tool.ainvoke({"destination": "成都", "interests": ["博物馆"]})  # 不同参数
 
     assert call_count["n"] == 2      # 相同调用只打一次 API
     assert r1 == r2                  # 命中缓存返回同一结果
