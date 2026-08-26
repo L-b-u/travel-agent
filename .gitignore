@@ -33,3 +33,6 @@ Thumbs.db
 
 # LangGraph checkpoint
 *.pkl
+
+# 本地求职笔记
+notes/

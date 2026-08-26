@@ -1,26 +1,22 @@
-# Travel Agent — 基于 LangChain + LangGraph 的 LLM Agent 工程化实践
-
-> 题材是载体，工程实践是核心：Workflow vs Agent 取舍、HITL 落地、双层安全审查、Eval 评估体系、全链路降级
-
-## 项目简介
+# Travel Agent — 基于 LangChain + LangGraph 的多 Agent 旅行规划系统
 
 用户输入自然语言旅行需求（目的地、预算、天数、兴趣偏好），系统通过 LangGraph 状态图编排多个专业化节点，自动完成偏好提取、POI 搜索、路线估算、攻略检索、天气/预算分析、行程合成与安全审查，输出一份带预算拆分和引用来源的 Markdown 旅行计划。
 
-**这不是固定流水线套壳**——研究阶段是一个真正的 ReAct Agent：LLM 通过 Tool Calling 自主决定调用哪些工具、调用几次（先查什么、后查什么、要不要验证两点间距离）；而天气/预算等必须保证覆盖的关键数据走确定性并行节点。两种范式的取舍依据写在 [架构设计](#️-架构设计) 一节。
+研究阶段是一个真正的 ReAct Agent：LLM 通过 Tool Calling 自主决定调用哪些工具、调用几次（先查什么、后查什么、要不要验证两点间距离）；而天气/预算等必须保证覆盖的关键数据走确定性并行节点。两种范式的取舍依据见 [架构设计](#️-架构设计) 一节。
 
-## ✨ 核心亮点
+## ✨ 核心特性
 
-| 能力 | 实现 | 为什么值得讲 |
-|------|------|--------------|
-| **真实 Tool Calling** | `create_react_agent` + `bind_tools`，LLM 自主调度 POI 搜索/路线估算/RAG 检索三个工具，结果经 side-channel 捕获不依赖 LLM 复述 | Agent 自主性有代码事实支撑，side-channel 是防幻觉丢数据的实战手法 |
-| **HITL 人工确认闭环** | 审查命中 → `interrupt()` 中断 → 用户批准/拒绝 → `Command(resume=...)` 恢复；输入侧风险批准后可继续规划（条件边路由回主流程） | 用的是 LangGraph 区别于其他框架的核心机制，且处理了"批准后继续"与防重复拦截 |
-| **Fail-fast 入口守卫** | 危险请求在消耗任何 LLM/API 资源前被拦截（实测 0.02s，对比末端拦截 ~60s） | 安全前置是生产思维；测试断言了拦截耗时 |
-| **双层安全审查** | 输入侧（入口）+ 输出侧（合成后）分别检测；分级处置：确认/仅提醒/放行；正常订房请求不误伤（有回归用例锁定） | 安全不是关键词黑名单一句话，误伤修复过程本身就是好故事 |
-| **RAG 攻略知识库** | 8 城市 Markdown 攻略按章节切块，jieba 分词 + BM25 词法检索，配置 Embedding 后自动升级为混合检索；作为 Agent 工具暴露 + 合成上下文确定性注入，行程尾部标注引用来源 | 轻量无重依赖（无向量库），降级策略与全局一致；source grounding 可验证 |
-| **结构化输出** | 偏好收集走 `with_structured_output` 返回 Pydantic 实例，Schema 内做枚举归一化与非法值过滤 | 不用手写正则抠 JSON；LLM 输出非法时整体降级规则兜底 |
-| **Eval 双层评估** | 规则检查（结构/约束/安全合规，毫秒级回归）+ LLM-as-Judge rubric 五维评分（约束满足/可执行性/信息完备/应变/表达），汇总进报告 | 规则保底线、judge 补深度，两层互补 |
-| **全链路降级** | LLM 失败→规则兜底；高德失败→内置 360+ 景点库；Open-Meteo 失败→占位天气；Embedding 失败→纯 BM25。任一外部依赖挂掉系统仍可用 | 测试全部离线可跑就是这套设计的直接证明 |
-| **可观测性** | loguru 结构化日志（节点耗时/Token 用量/数据来源）；一行环境变量接入 LangSmith 或 Langfuse trace | 从日志级到平台级的观测路径都打通 |
+| 能力 | 实现 |
+|------|------|
+| **真实 Tool Calling** | `create_react_agent` + `bind_tools`，LLM 自主调度 POI 搜索/路线估算/RAG 检索三个工具，结果经 side-channel 捕获不依赖 LLM 复述 |
+| **HITL 人工确认闭环** | 审查命中 → `interrupt()` 中断 → 用户批准/拒绝 → `Command(resume=...)` 恢复；输入侧风险批准后可继续规划（条件边路由回主流程） |
+| **Fail-fast 入口守卫** | 危险请求在消耗任何 LLM/API 资源前被拦截（实测 0.02s，对比末端拦截 ~60s） |
+| **双层安全审查** | 输入侧（入口）+ 输出侧（合成后）分别检测；分级处置：确认/仅提醒/放行；正常订房请求不误伤（有回归用例锁定） |
+| **RAG 攻略知识库** | 8 城市 Markdown 攻略按章节切块，jieba 分词 + BM25 词法检索，配置 Embedding 后自动升级为混合检索；作为 Agent 工具暴露 + 合成上下文确定性注入，行程尾部标注引用来源 |
+| **结构化输出** | 偏好收集走 `with_structured_output` 返回 Pydantic 实例，Schema 内做枚举归一化与非法值过滤 |
+| **Eval 双层评估** | 规则检查（结构/约束/安全合规，毫秒级回归）+ LLM-as-Judge rubric 五维评分（约束满足/可执行性/信息完备/应变/表达），汇总进报告 |
+| **全链路降级** | LLM 失败→规则兜底；高德失败→内置 360+ 景点库；Open-Meteo 失败→占位天气；Embedding 失败→纯 BM25。任一外部依赖不可用系统仍可运行 |
+| **可观测性** | loguru 结构化日志（节点耗时/Token 用量/数据来源）；一行环境变量接入 LangSmith 或 Langfuse trace |
 
 ## 🏗️ 架构设计
 
@@ -64,7 +60,7 @@
                      END
 ```
 
-**Workflow 与 Agent 的取舍**：探索性任务（搜什么、按什么顺序看）交给 ReAct Agent 收益来自动态决策；天气/预算是必须覆盖的关键数据，走确定性并行节点更可控、可测、可降级。整张图里两种范式各司其职，而不是为了"多 Agent"名头把所有环节都包成节点壳。
+**Workflow 与 Agent 的取舍**：探索性任务（搜什么、按什么顺序看）交给 ReAct Agent 收益来自动态决策；天气/预算是必须覆盖的关键数据，走确定性并行节点更可控、可测、可降级。两种范式在图中各司其职。
 
 ## 🔧 技术栈
 
@@ -208,18 +204,6 @@ ruff check app tests
 ```
 
 测试策略：外部依赖在高德/Open-Meteo/LLM 的**工具边界**统一打桩（`tests/conftest.py`），单测覆盖安全审查误伤回归、结构化输出校验、RAG 相关性、HITL 中断/恢复/fail-fast 时限、API 端点行为（含无断点恢复的 409 防御）。GitHub Actions 在 push/PR 时跑 lint + 双版本测试 + Docker 构建。
-
-## 🎓 简历表达
-
-> **Travel Agent — 基于 LangChain + LangGraph 的 LLM Agent 工程化实践**
->
-> - 使用 LangGraph StateGraph 编排混合范式流水线：研究阶段以 create_react_agent 构建真正的 Tool Calling Agent（LLM 自主决策调用 POI 搜索/路线估算/RAG 检索），天气/预算等关键数据走确定性 Fan-out/Fan-in 并行节点，兼顾探索性与可控性
-> - 落地 HITL 人工确认闭环：双层安全审查（入口守卫 fail-fast + 输出侧复查）通过 interrupt() 中断图执行，人工批准后条件边路由回主流程继续规划；危险请求拦截从 ~60s 降至 0.02s，并有误伤回归用例锁定正常订房请求不受影响
-> - 实现轻量 RAG 攻略知识库（jieba+BM25，可选 Embedding 混合检索，无向量库依赖），以 Agent 工具 + 合成上下文双通道注入，行程标注引用来源实现 source grounding
-> - 设计双层 Eval 体系：22 条规则用例（毫秒级回归拦截）+ LLM-as-Judge 五维 rubric 评分；偏好收集使用 with_structured_output 结构化输出并内建枚举归一化
-> - 全链路降级设计（LLM→规则兜底、地图 API→内置数据库、向量→BM25），73 个离线单元测试 <10s 跑完，GitHub Actions 自动化 lint/test/docker 构建
->
-> **技术栈**: Python, LangChain, LangGraph, FastAPI(SSE), Pydantic v2, RAG(BM25), pytest, Docker, 高德地图, Open-Meteo
 
 ## 许可证
 
