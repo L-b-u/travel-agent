@@ -70,6 +70,11 @@ class TravelState(TypedDict, total=False):
     # ---- 路线规划 ----
     routes: List[Dict[str, Any]]
 
+    # ---- 研究阶段（ReAct Agent / 确定性兜底共用）----
+    research_summary: str          # Agent 对目的地布局的自然语言总结
+    research_trace: List[Dict[str, Any]]  # 工具调用轨迹（工具/参数/耗时）
+    research_meta: Dict[str, Any]  # {"mode": "react"|"deterministic", ...}
+
     # ---- 天气信息 ----
     weather: List[Dict[str, Any]]
 

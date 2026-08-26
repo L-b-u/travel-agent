@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-LangGraph 状态图：编排 7 个 Agent 节点的流水线。
+LangGraph 状态图：编排 Travel Agent 流水线。
 
 流程：
-    collect_preferences → search_pois → plan_routes
-                                    → check_weather ─┐
-                                    → estimate_budget ┘
-                                    → synthesize → safety_review → END
+    collect_preferences → research（ReAct 工具调用）
+                        → check_weather ──┐  (Fan-out 并行，确定性保证覆盖)
+                        → estimate_budget ┘
+                        → synthesize → safety_review → human_gate → END
 
-天气和预算节点并行执行（Fan-out / Fan-in）。
+研究阶段由 LLM 通过 Tool Calling 自主探索（搜 POI、估路线）；
+天气与预算是必须覆盖的关键数据，走确定性并行节点；
+安全审查发现风险时，human_gate 节点通过 interrupt() 中断等待人工确认（HITL）。
 """
 
 from __future__ import annotations
@@ -24,27 +26,20 @@ from app.core.travel.agents import (
     check_weather_node,
     collect_preferences_node,
     estimate_budget_node,
-    plan_routes_node,
+    research_node,
     safety_review_node,
-    search_pois_node,
     synthesize_node,
 )
 from app.core.travel.state import TravelState
 
 
 def build_travel_graph() -> StateGraph:
-    """
-    构建 Travel Agent 的 LangGraph 状态图。
-
-    返回编译后的 graph 实例。使用 MemorySaver 按 thread_id 隔离会话状态
-    （安全审查节点标记 requires_confirmation，但当前未接 interrupt_before。
-    """
+    """构建 Travel Agent 的 LangGraph 状态图（MemorySaver 按 thread_id 隔离会话）。"""
     workflow = StateGraph(TravelState)
 
     # ---- 添加节点 ----
     workflow.add_node("collect_preferences", collect_preferences_node)
-    workflow.add_node("search_pois", search_pois_node)
-    workflow.add_node("plan_routes", plan_routes_node)
+    workflow.add_node("research", research_node)
     workflow.add_node("check_weather", check_weather_node)
     workflow.add_node("estimate_budget", estimate_budget_node)
     workflow.add_node("synthesize", synthesize_node)
@@ -53,28 +48,120 @@ def build_travel_graph() -> StateGraph:
     # ---- 设置边 ----
     workflow.set_entry_point("collect_preferences")
 
-    # 顺序链路
-    workflow.add_edge("collect_preferences", "search_pois")
-    workflow.add_edge("search_pois", "plan_routes")
+    # 顺序链路：偏好 → 研究（Tool Calling）
+    workflow.add_edge("collect_preferences", "research")
 
-    # Fan-out: 并行分发到天气和预算
-    workflow.add_edge("plan_routes", "check_weather")
-    workflow.add_edge("plan_routes", "estimate_budget")
+    # Fan-out: 并行分发到天气和预算（确定性节点）
+    workflow.add_edge("research", "check_weather")
+    workflow.add_edge("research", "estimate_budget")
 
     # Fan-in: 汇聚到合成节点
     workflow.add_edge("check_weather", "synthesize")
     workflow.add_edge("estimate_budget", "synthesize")
 
-    # 合成 → 安全审查 → 结束
+    # 合成 → 安全审查 → 人工确认门 → 结束
     workflow.add_edge("synthesize", "safety_review")
-    workflow.add_edge("safety_review", END)
+    workflow.add_conditional_edges(
+        "safety_review",
+        _route_after_safety,
+        {"gate": "human_gate", "end": END},
+    )
+    workflow.add_node("human_gate", _human_gate_placeholder)
+    workflow.add_edge("human_gate", END)
 
-    # MemorySaver 按 thread_id 隔离会话状态（interrupt/resume HITL 为预留扩展，未接入）
     memory = MemorySaver()
     graph = workflow.compile(checkpointer=memory)
 
     logger.info("Travel Agent LangGraph 编译完成")
     return graph
+
+
+def _route_after_safety(state: TravelState) -> str:
+    """安全审查后的路由：有需确认项则进人工确认门，否则直接结束。"""
+    return "gate" if state.get("requires_confirmation") else "end"
+
+
+async def _human_gate_placeholder(state: TravelState) -> Dict[str, Any]:
+    """人工确认门（占位）：B5 阶段替换为 interrupt() 实现。"""
+    return {}
+
+
+# 全局单例
+_travel_graph: Optional[StateGraph] = None
+
+
+def get_travel_graph() -> StateGraph:
+    """获取 Travel Agent 图单例。"""
+    global _travel_graph
+    if _travel_graph is None:
+        _travel_graph = build_travel_graph()
+    return _travel_graph
+
+
+def reset_travel_graph() -> None:
+    """重置图单例（测试用：更换节点实现后重建图）。"""
+    global _travel_graph
+    _travel_graph = None
+
+
+async def run_travel_agent(
+    user_input: str,
+    session_id: str = "default",
+    llm: Any = None,
+) -> Dict[str, Any]:
+    """
+    运行 Travel Agent 全流程。
+
+    Args:
+        user_input: 用户自然语言输入
+        session_id: 会话 ID（同时作为 checkpointer 的 thread_id）
+        llm: ModelRouter 实例（含 ainvoke / ainvoke_structured / chat_model），可选
+
+    Returns:
+        最终状态字典；若触发人工确认，包含 requires_confirmation 与 confirmation_items，
+        可通过 resume_travel_agent 传入用户决定继续。
+    """
+    graph = get_travel_graph()
+
+    config = {"configurable": {"thread_id": session_id, "llm": llm}}
+
+    initial_state: TravelState = {
+        "user_input": user_input,
+        "session_id": session_id,
+        "preferences": {},
+        "pois": [],
+        "routes": [],
+        "research_summary": "",
+        "research_trace": [],
+        "research_meta": {},
+        "weather": [],
+        "budget": {},
+        "itinerary": "",
+        "safety_result": {},
+        "requires_confirmation": False,
+        "confirmation_items": [],
+        "error": None,
+    }
+
+    logger.info("开始 Travel Agent 流程: session={}", session_id)
+
+    t0 = time.perf_counter()
+    try:
+        final_state = await graph.ainvoke(initial_state, config)
+        logger.info(
+            "Travel Agent 流程完成: session={}, 模式={}, 总耗时 {:.2f}s",
+            session_id,
+            final_state.get("research_meta", {}).get("mode", "-"),
+            time.perf_counter() - t0,
+        )
+        return final_state
+    except Exception as e:
+        logger.exception("Travel Agent 流程异常: {}", e)
+        return {
+            **initial_state,
+            "error": str(e),
+            "itinerary": f"## 抱歉，旅行规划过程中出现错误\n\n错误信息：{e}\n\n请稍后重试。",
+        }
 
 
 # 全局单例
