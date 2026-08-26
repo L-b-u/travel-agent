@@ -78,7 +78,8 @@ async def search_places(
             all_pois.sort(key=lambda x: float(x.get("rating", 0) or 0), reverse=True)
             return all_pois[:limit]
     except Exception as e:
-        logger.warning("高德地图 API 调用失败，降级到内置数据: {}", e)
+        # 异常类型必须进日志：空消息的超时/协议错误只看 str(e) 无法定位
+        logger.warning("高德地图 API 调用失败，降级到内置数据: {}: {}", type(e).__name__, e)
 
     return _filter_fallback(destination, interests, limit)
 
@@ -112,7 +113,8 @@ async def _search_via_amap(
     url = "https://restapi.amap.com/v3/place/text"
     headers = {"User-Agent": "TravelAgent/1.0 (educational-project)"}
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    # 10s 超时：搜索是 Agent 工具调用链的一环，快速失败好过长时间挂起
+    async with httpx.AsyncClient(timeout=10.0) as client:
         for keyword in keywords_list:
             params = {
                 "keywords": keyword,
