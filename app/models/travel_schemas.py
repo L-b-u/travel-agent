@@ -20,6 +20,14 @@ class TravelRequest(BaseModel):
     session_id: str = Field(default="default", description="会话 ID，用于多轮对话")
 
 
+class ConfirmRequest(BaseModel):
+    """人工确认请求（HITL 恢复）。"""
+
+    session_id: str = Field(..., description="与触发中断时相同的会话 ID")
+    approved: bool = Field(..., description="是否批准继续")
+    note: str = Field(default="", description="备注（如拒绝原因）")
+
+
 class PreferenceResponse(BaseModel):
     """结构化偏好。"""
 
@@ -34,7 +42,11 @@ class PreferenceResponse(BaseModel):
 
 
 class TravelPlanResponse(BaseModel):
-    """完整旅行计划响应。"""
+    """旅行计划响应。
+
+    requires_confirmation=True 时表示流程已中断等待人工确认，
+    应引导用户调用 /travel/confirm 端点提交决定。
+    """
 
     session_id: str
     preferences: Dict[str, Any]
@@ -42,6 +54,18 @@ class TravelPlanResponse(BaseModel):
     safety_result: Dict[str, Any]
     requires_confirmation: bool
     confirmation_items: List[str]
+    status: Optional[str] = Field(
+        default=None,
+        description="流程状态：pending_confirmation / completed / cancelled",
+    )
+    research_meta: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="研究阶段元信息（react/deterministic、工具调用次数等）",
+    )
+    tips_citations: List[str] = Field(
+        default_factory=list,
+        description="RAG 攻略引用来源",
+    )
 
 
 class EvalItineraryRequest(BaseModel):

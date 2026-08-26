@@ -161,6 +161,7 @@ async def run_travel_agent(
     user_input: str,
     session_id: str = "default",
     llm: Any = None,
+    token_callback: Any = None,
 ) -> Dict[str, Any]:
     """
     运行 Travel Agent 全流程。
@@ -169,6 +170,8 @@ async def run_travel_agent(
         user_input: 用户自然语言输入
         session_id: 会话 ID（同时作为 checkpointer 的 thread_id）
         llm: ModelRouter 实例（含 ainvoke / ainvoke_structured / chat_model），可选
+        token_callback: 可选流式回调，行程合成节点的 LLM 每 output 一个 chunk 调用一次
+            （参数为累积全文快照），供 SSE 推送；不影响非流式调用方
 
     Returns:
         最终状态字典；若触发人工确认，包含 requires_confirmation 与 confirmation_items，
@@ -176,7 +179,13 @@ async def run_travel_agent(
     """
     graph = get_travel_graph()
 
-    config = {"configurable": {"thread_id": session_id, "llm": llm}}
+    config = {
+        "configurable": {
+            "thread_id": session_id,
+            "llm": llm,
+            "token_callback": token_callback,
+        }
+    }
 
     initial_state: TravelState = {
         "user_input": user_input,
@@ -251,65 +260,3 @@ def pending_confirmation(state: Dict[str, Any]) -> bool:
     """判断图是否正中断等待人工确认（ainvoke 返回值含 __interrupt__ 即在等待）。"""
     return bool(state.get("__interrupt__"))
 
-
-# 全局单例
-_travel_graph: Optional[StateGraph] = None
-
-
-def get_travel_graph() -> StateGraph:
-    """获取 Travel Agent 图单例。"""
-    global _travel_graph
-    if _travel_graph is None:
-        _travel_graph = build_travel_graph()
-    return _travel_graph
-
-
-async def run_travel_agent(
-    user_input: str,
-    session_id: str = "default",
-    llm: Any = None,
-) -> Dict[str, Any]:
-    """
-    运行 Travel Agent 全流程。
-
-    Args:
-        user_input: 用户自然语言输入
-        session_id: 会话 ID
-        llm: LLM 实例（需实现 acomplete 方法），可选
-
-    Returns:
-        最终状态字典，包含 itinerary / safety_result / preferences 等
-    """
-    graph = get_travel_graph()
-
-    config = {"configurable": {"thread_id": session_id, "llm": llm}}
-
-    initial_state: TravelState = {
-        "user_input": user_input,
-        "session_id": session_id,
-        "preferences": {},
-        "pois": [],
-        "routes": [],
-        "weather": [],
-        "budget": {},
-        "itinerary": "",
-        "safety_result": {},
-        "requires_confirmation": False,
-        "confirmation_items": [],
-        "error": None,
-    }
-
-    logger.info("开始 Travel Agent 流程: session={}", session_id)
-
-    t0 = time.perf_counter()
-    try:
-        final_state = await graph.ainvoke(initial_state, config)
-        logger.info("Travel Agent 流程完成: session={}, 总耗时 {:.2f}s", session_id, time.perf_counter() - t0)
-        return final_state
-    except Exception as e:
-        logger.exception("Travel Agent 流程异常: {}", e)
-        return {
-            **initial_state,
-            "error": str(e),
-            "itinerary": f"## 抱歉，旅行规划过程中出现错误\n\n错误信息：{e}\n\n请稍后重试。",
-        }
