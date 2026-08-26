@@ -54,20 +54,40 @@ class TravelPreferences(BaseModel):
     @field_validator("interests", mode="before")
     @classmethod
     def _normalize_interests(cls, v: Any) -> list[str]:
-        """兴趣归一化为受控词表，过滤无效项。"""
+        """兴趣归一化为受控词表。
+
+        三级匹配：精确命中 → 英文别名 → 关键词模糊归类（如"大熊猫"→自然），
+        避免 LLM 返回具体名词时被当作无效项静默丢弃。
+        """
         allowed = {"景点", "美食", "博物馆", "自然", "历史", "购物", "宗教", "建筑", "公园", "咖啡"}
         alias = {
             "museum": "博物馆", "food": "美食", "nature": "自然",
             "history": "历史", "shopping": "购物", "temple": "宗教",
             "architecture": "建筑", "park": "公园", "cafe": "咖啡",
         }
+        # 子串归类：LLM 常返回具体名词而非类别词
+        hints = [
+            ("熊猫", "自然"), ("动物园", "自然"), ("瀑布", "自然"), ("森林", "自然"),
+            ("雪山", "自然"), ("湖", "自然"), ("海", "自然"), ("山", "自然"), ("江", "自然"),
+            ("古镇", "历史"), ("古城", "历史"), ("遗址", "历史"), ("文物", "历史"),
+            ("寺", "宗教"), ("庙", "宗教"), ("教堂", "宗教"),
+            ("火锅", "美食"), ("小面", "美食"), ("串串", "美食"), ("小吃", "美食"),
+            ("烤肉", "美食"), ("菜", "美食"), ("吃", "美食"),
+            ("博物", "博物馆"), ("展馆", "博物馆"), ("美术馆", "博物馆"),
+            ("商场", "购物"), ("免税", "购物"), ("乐园", "景点"), ("主题园", "景点"),
+        ]
         result: list[str] = []
         if not isinstance(v, list):
             return result
         for item in v:
             word = str(item).strip()
             word = alias.get(word.lower(), word)
-            if word in allowed and word not in result:
+            if word in allowed:
+                pass  # 精确命中
+            else:
+                matched = next((cat for kw, cat in hints if kw in word), None)
+                word = matched or ""  # 无法归类则丢弃
+            if word and word in allowed and word not in result:
                 result.append(word)
         return result or ["景点", "美食"]
 

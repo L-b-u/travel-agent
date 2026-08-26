@@ -22,7 +22,8 @@ from tests.conftest import FakeLLM
 
 def test_interests_alias_normalization():
     p = TravelPreferences(interests=["museum", "MUSEUM", "火锅", "不存在的兴趣"])
-    assert p.interests == ["博物馆"]  # 别名映射 + 去重 + 无效过滤 → 非空补默认
+    # 别名映射 + 去重；"火锅"经模糊归类为美食；无法归类的丢弃
+    assert p.interests == ["博物馆", "美食"]
 
 
 def test_interests_empty_falls_back_to_default():
@@ -222,3 +223,22 @@ def test_null_enum_fields_normalized_to_defaults():
 def test_empty_string_enum_fields_normalized():
     p = TravelPreferences(companions="", accommodation="  ")
     assert p.companions == "solo" and p.accommodation == "mid"
+
+
+def test_interest_fuzzy_categorization():
+    """具体名词应模糊归类到兴趣大类（线上故障：'大熊猫'被静默丢弃）。"""
+    p = TravelPreferences(interests=["美食", "大熊猫"])
+    assert "美食" in p.interests
+    assert "自然" in p.interests  # 大熊猫 → 自然
+
+
+def test_budget_includes_local_transit_base():
+    from app.core.travel.tools.estimate_budget import estimate_budget
+
+    result = estimate_budget.invoke({
+        "destination": "成都", "days": 2, "routes": [],
+        "accommodation_level": "mid", "persons": 1, "total_budget": 0,
+    })
+    # 无路线时交通费不再是 0（含市内通勤基础费）
+    assert result["transport"] >= 15 * 2 * 0.8
+    assert "大交通" in result["note"]

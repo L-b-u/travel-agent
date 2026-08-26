@@ -78,8 +78,9 @@ def estimate_budget(
     """
     price_index = CITY_PRICE_INDEX.get(destination, 0.8)
 
-    # 交通费
-    transport = 0.0
+    # 交通费 = 市内通勤基础费 + 景点间路线费
+    # （基础费兜底：路线估算只覆盖 POI 之间的移动，不含地铁/公交日常出行）
+    transport = 15.0 * days * persons * price_index
     for route in routes:
         dist = route.get("distance_km", 0)
         mode = route.get("mode", "transit")
@@ -116,14 +117,21 @@ def estimate_budget(
         "note": "",
     }
 
-    # 预算提醒
+    # 预算提醒（始终注明未含往返大交通）
+    disclaimer = "未含往返大交通（机票/高铁）"
     if total_budget > 0:
         if result["total"] > total_budget:
             over = result["total"] - total_budget
-            result["note"] = f"⚠️ 超出预算约 {over:.0f} 元（{over/total_budget*100:.0f}%），建议调整住宿等级或减少天数"
+            pct = over / total_budget * 100
+            result["note"] = (
+                f"⚠️ 超出预算约 {over:.0f} 元（{pct:.0f}%），"
+                f"建议调整住宿等级或减少天数；{disclaimer}"
+            )
         elif result["total"] > total_budget * 0.8:
-            result["note"] = f"⚡ 预算使用率 {result['total']/total_budget*100:.0f}%，请合理控制支出"
+            result["note"] = f"⚡ 预算使用率 {result['total']/total_budget*100:.0f}%，请合理控制支出；{disclaimer}"
         else:
-            result["note"] = f"✅ 预算充足，剩余 {total_budget - result['total']:.0f} 元"
+            result["note"] = f"✅ 预算充足，剩余 {total_budget - result['total']:.0f} 元；{disclaimer}"
+    else:
+        result["note"] = f"ℹ️ {disclaimer}"
 
     return result
