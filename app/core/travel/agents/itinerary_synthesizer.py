@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timedelta
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
@@ -37,17 +38,17 @@ ITINERARY_SYSTEM_PROMPT = """你是专业旅行规划师。请根据提供的旅
 
 ## 📅 每日详细计划
 
-### Day 1
+### Day 1（M月D日 周X）
 - **上午**：...
 - **中午**：...
 - **下午**：...
 - **晚上**：...
 
-### Day 2
+### Day 2（M月D日 周X）
 ...
 
 ## 🌤️ 天气提醒
-（根据天气情况给出建议）
+（根据天气情况给出建议；天气数据对应的就是上述出发日期起的预报）
 
 ## 💰 预算拆分
 | 项目 | 费用 |
@@ -66,6 +67,9 @@ ITINERARY_SYSTEM_PROMPT = """你是专业旅行规划师。请根据提供的旅
 
 ## 规则
 - 每天安排 3-4 个景点，劳逸结合
+- 若用户偏好含出发日期（start_date），每日标题必须标注对应的真实日期与星期，
+  格式如 "Day 1（8月29日 周六）"，后续日期依次顺延；无出发日期才可只写 "Day N"
+- 行程中的天气提醒必须与各天实际日期对应，不要张冠李戴
 - 上午安排体力消耗大的景点，下午安排轻松的
 - 标注各景点间的交通方式和时间
 - 如果天气不佳，给出备选方案
@@ -180,6 +184,24 @@ def _append_tips_footer(itinerary: str, tips: list[dict[str, Any]]) -> str:
     return itinerary + f"\n\n---\n\n> 📚 攻略参考来源：{citations}\n"
 
 
+def _day_label(day_offset: int, start_date_str: str | None) -> str:
+    """
+    构造每日标题标签："Day N（8月29日 周六）"；无出发日期时退化为 "Day N"。
+
+    Args:
+        day_offset: 第几天（0 起）
+        start_date_str: 出发日期 YYYY-MM-DD，可为 None
+    """
+    base = f"Day {day_offset + 1}"
+    if not start_date_str:
+        return base
+    try:
+        d = datetime.strptime(start_date_str, "%Y-%m-%d").date() + timedelta(days=day_offset)
+        return f"{base}（{d.month}月{d.day}日 {'周' + '一二三四五六日'[d.weekday()]}）"
+    except ValueError:
+        return base
+
+
 def _template_generate(
     prefs: dict[str, Any],
     pois: list[dict[str, Any]],
@@ -194,20 +216,39 @@ def _template_generate(
     interests = prefs.get("interests", [])
     accommodation = prefs.get("accommodation", "mid")
     companions = prefs.get("companions", "solo")
+    start_date = prefs.get("start_date")
 
     companion_map = {"solo": "独自", "couple": "情侣", "family": "家庭", "friends": "朋友"}
     acc_map = {"budget": "经济型", "mid": "舒适型", "luxury": "豪华型"}
 
-    lines = [
-        f"# {days}天{days - 1}晚 {destination}旅行计划",
-        "",
-        "## 📋 约束摘要",
+    date_line = ""
+    if start_date:
+        try:
+            d0 = datetime.strptime(start_date, "%Y-%m-%d").date()
+            d1 = d0 + timedelta(days=max(days - 1, 0))
+            date_line = (
+                f"- 出行日期：{d0.month}月{d0.day}日（{'周' + '一二三四五六日'[d0.weekday()]}）"
+                f" ~ {d1.month}月{d1.day}日（{'周' + '一二三四五六日'[d1.weekday()]}）"
+            )
+        except ValueError:
+            date_line = ""
+
+    summary_lines = [
         f"- 目的地：{destination}",
         f"- 天数：{days}天",
         f"- 预算：{budget_total}元" if budget_total else "- 预算：无限制",
         f"- 兴趣：{'、'.join(interests)}",
         f"- 同行人：{companion_map.get(companions, companions)}",
         f"- 住宿偏好：{acc_map.get(accommodation, accommodation)}",
+    ]
+    if date_line:
+        summary_lines.insert(2, date_line)
+
+    lines = [
+        f"# {days}天{days - 1}晚 {destination}旅行计划",
+        "",
+        "## 📋 约束摘要",
+        *summary_lines,
         "",
         "## 🗺️ 行程总览",
         "",
@@ -224,10 +265,11 @@ def _template_generate(
 
     # 行程总览
     for day, day_pois in enumerate(daily_pois):
+        label = _day_label(day, start_date)
         for j, poi in enumerate(day_pois):
             time_slot = ["上午", "中午", "下午", "晚上"][min(j, 3)]
             lines.append(
-                f"| Day{day + 1} {time_slot} | {poi.get('name', '')} | "
+                f"| {label} {time_slot} | {poi.get('name', '')} | "
                 f"步行/公交 | 约{budget.get('per_day', 0) / max(len(day_pois), 1):.0f}元 | "
                 f"{poi.get('category', '')} |"
             )
@@ -236,7 +278,7 @@ def _template_generate(
     lines.append("## 📅 每日详细计划")
 
     for day, day_pois in enumerate(daily_pois):
-        lines.append(f"### Day {day + 1}")
+        lines.append(f"### {_day_label(day, start_date)}")
         for j, poi in enumerate(day_pois):
             time_slot = ["上午", "中午", "下午", "晚上"][min(j, 3)]
             rating = poi.get("rating", "N/A")

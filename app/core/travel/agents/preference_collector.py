@@ -9,7 +9,7 @@ LLM 返回 Pydantic 实例而非自由文本，无需正则抠 JSON。
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Literal
 
 from langchain_core.runnables import RunnableConfig
@@ -75,7 +75,65 @@ PREFERENCE_SYSTEM_PROMPT = """你是一个旅行偏好分析助手。从用户�
 - 只提取用户明确提到的兴趣，不要根据目的地推断用户未提及的兴趣
 - companions: solo/couple/family/friends；accommodation: budget/mid/luxury
 - 缺失字段使用合理默认值
-- start_date: 用户说"今天"则用当前日期，"明天"用当前日期+1，未提及则 null"""
+- start_date 必须是具体日期（YYYY-MM-DD）。把用户的相对时间表达结合"当前日期与星期"
+  换算成确切日期："今天"=当天；"明天"=+1 天；"后天"=+2 天；
+  "这周末/周末去"=最近的周六（若今天是周六则为今天）；"这周六""这周日"同理；
+  "下周末"=下一周的周六；"下周X""星期X"按日历推算。完全未提及出行时间才填 null"""
+
+
+def _weekday_cn(d: date) -> str:
+    """日期转中文星期（如"周三"）。"""
+    return "周" + "一二三四五六日"[d.weekday()]
+
+
+def _resolve_relative_date(user_input: str, today: date) -> str | None:
+    """
+    规则兜底的相对日期解析（LLM 不可用时）。
+
+    支持：今天/明天/后天/大后天、这周末/本周末、下周末、（这|本|下）周X/星期X。
+    "这周末"取最近的周六（含今天）；周日说"这周末"视为当天。
+    返回 YYYY-MM-DD 或 None。
+    """
+
+    def fmt(d: date) -> str:
+        return d.isoformat()
+
+    if any(w in user_input for w in ["今天", "今晚"]):
+        return fmt(today)
+    if "明天" in user_input:
+        return fmt(today + timedelta(days=1))
+    if "大后天" in user_input:
+        return fmt(today + timedelta(days=3))
+    if "后天" in user_input:
+        return fmt(today + timedelta(days=2))
+
+    # 周内具体某天：（这|本|下）（周|星期）X / 周X / 星期X
+    weekday_names = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
+    m = re.search(r"(这|本|下)?(?:周|星期)([一二三四五六日天])", user_input)
+    if m:
+        prefix, name = m.group(1), m.group(2)
+        target = weekday_names[name]
+        delta = (target - today.weekday()) % 7
+        candidate = today + timedelta(days=delta)
+        if delta == 0:
+            return fmt(candidate)  # 今天就是目标星期
+        if prefix == "下":
+            # "下周X"：下一个完整周的同一天（至少再过一周内）
+            candidate = candidate + timedelta(days=7) if delta <= 6 - today.weekday() else candidate
+            return fmt(candidate)
+        if delta < (7 - today.weekday()):  # 本周内
+            return fmt(candidate)
+        return fmt(candidate)
+
+    # 周末表达："这周末/本周末" → 最近周六（含今天）；"下周末" → 下周的周六
+    if any(w in user_input for w in ["周末"]):
+        if "下" in user_input.replace("下个月", ""):
+            next_monday = today + timedelta(days=7 - today.weekday())
+            return fmt(next_monday + timedelta(days=5))
+        days_to_sat = (5 - today.weekday()) % 7
+        return fmt(today + timedelta(days=days_to_sat))
+
+    return None
 
 
 async def collect_preferences_node(state: dict, config: RunnableConfig) -> dict[str, Any]:
@@ -99,7 +157,13 @@ async def collect_preferences_node(state: dict, config: RunnableConfig) -> dict[
         try:
             messages = [
                 {"role": "system", "content": PREFERENCE_SYSTEM_PROMPT},
-                {"role": "user", "content": f"当前日期：{date.today().isoformat()}\n用户需求：\n{user_input}"},
+                {
+                    "role": "user",
+                    "content": (
+                        f"当前日期：{date.today().isoformat()}（{_weekday_cn(date.today())}）\n"
+                        f"用户需求：\n{user_input}"
+                    ),
+                },
             ]
             parsed: TravelPreferences = await llm.ainvoke_structured(messages, TravelPreferences, temperature=0.1)
             preferences = parsed.to_dict()
@@ -117,6 +181,11 @@ async def collect_preferences_node(state: dict, config: RunnableConfig) -> dict[
 
 def _fallback_parse(user_input: str, prefs: dict[str, Any]) -> None:
     """基于规则的偏好提取兜底。"""
+    # 相对日期 → 具体出发日（如"这周末"→最近周六）
+    resolved = _resolve_relative_date(user_input, date.today())
+    if resolved:
+        prefs["start_date"] = resolved
+
     # 提取目的地（从已知城市列表匹配，避免误用默认值"杭州"）
     from app.core.travel.tools._poi_data import CITY_COORDS
     for city in CITY_COORDS:

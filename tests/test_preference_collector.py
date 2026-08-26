@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from pydantic import ValidationError
 
 from app.core.travel.agents.preference_collector import (
     TravelPreferences,
     _fallback_parse,
+    _resolve_relative_date,
+    _weekday_cn,
     collect_preferences_node,
 )
 from tests.conftest import FakeLLM
@@ -118,3 +122,83 @@ async def test_node_without_llm_uses_rules():
     )
     assert result["preferences"]["destination"] == "成都"
     assert result["preferences"]["days"] == 3
+
+
+# ---------------------------------------------------------------------------
+# 相对日期解析
+# ---------------------------------------------------------------------------
+
+WED = date(2026, 8, 26)  # 周三
+
+
+def test_weekday_cn():
+    assert _weekday_cn(WED) == "周三"
+    assert _weekday_cn(date(2026, 8, 29)) == "周六"
+
+
+def test_this_weekend_from_wednesday():
+    # 周三说"这周末" → 最近的周六 2026-08-29
+    assert _resolve_relative_date("这周末我想去成都", WED) == "2026-08-29"
+
+
+def test_this_saturday_explicit():
+    assert _resolve_relative_date("这周六出发", WED) == "2026-08-29"
+
+
+def test_tomorrow_and_day_after():
+    assert _resolve_relative_date("明天出发", WED) == "2026-08-27"
+    assert _resolve_relative_date("后天到西安", WED) == "2026-08-28"
+
+
+def test_next_weekend():
+    # 周三说"下周末" → 下周周六 2026-09-05
+    assert _resolve_relative_date("下周末去重庆", WED) == "2026-09-05"
+
+
+def test_no_time_expression_returns_none():
+    assert _resolve_relative_date("我想去杭州玩两天", WED) is None
+
+
+def test_fallback_parse_sets_start_date():
+    prefs: dict = {}
+    from app.core.travel.agents.preference_collector import _fallback_parse
+
+    _fallback_parse("这周末我想去成都玩两天，预算1500元", prefs)
+    assert prefs["start_date"] == date.today().isoformat() or prefs["start_date"]
+
+
+# ---------------------------------------------------------------------------
+# 模板路径的日期标注
+# ---------------------------------------------------------------------------
+
+def test_day_label_with_date():
+    from app.core.travel.agents.itinerary_synthesizer import _day_label
+
+    label = _day_label(0, "2026-08-29")
+    assert "Day 1" in label and "8月29日" in label and "周六" in label
+    label2 = _day_label(1, "2026-08-29")
+    assert "Day 2" in label2 and "8月30日" in label2 and "周日" in label2
+
+
+def test_day_label_without_date():
+    from app.core.travel.agents.itinerary_synthesizer import _day_label
+
+    assert _day_label(0, None) == "Day 1"
+
+
+def test_template_generate_includes_dates():
+    from app.core.travel.agents.itinerary_synthesizer import _template_generate
+
+    md = _template_generate(
+        prefs={"destination": "成都", "days": 2, "budget": 1500, "interests": ["美食"],
+               "accommodation": "mid", "companions": "solo", "start_date": "2026-08-29"},
+        pois=[{"name": "宽窄巷子", "rating": 4.5, "category": "景点"},
+              {"name": "大熊猫基地", "rating": 4.8, "category": "景点"},
+              {"name": "锦里", "rating": 4.4, "category": "景点"}],
+        routes=[], weather=[{"date": "2026-08-29", "condition": "多云",
+                             "temp_min": 22, "temp_max": 30}],
+        budget={"per_day": 750},
+    )
+    assert "出行日期" in md and "8月29日（周六）" in md
+    assert "### Day 1（8月29日 周六）" in md
+    assert "### Day 2（8月30日 周日）" in md

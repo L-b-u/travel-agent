@@ -67,8 +67,11 @@ def save_itinerary(
         dest = preferences.get("destination", "未知")
         days = preferences.get("days", 0)
         budget = preferences.get("budget", 0)
+        start_date = preferences.get("start_date")
         meta_lines.append(f"目的地: {dest}")
         meta_lines.append(f"天数: {days}")
+        if start_date:
+            meta_lines.append(f"出发日期: {start_date}")
         meta_lines.append(f"预算: {budget} 元")
     meta_lines.append("-->")
 
