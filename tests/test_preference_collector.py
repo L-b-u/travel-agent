@@ -242,3 +242,44 @@ def test_budget_includes_local_transit_base():
     # 无路线时交通费不再是 0（含市内通勤基础费）
     assert result["transport"] >= 15 * 2 * 0.8
     assert "大交通" in result["note"]
+
+
+def test_interests_raw_preserved():
+    """原话词单独保留（如"大熊猫"），供检索直接当关键词，不被归类丢弃。"""
+    p = TravelPreferences.model_validate({
+        "destination": "成都", "interests": ["美食", "自然"],
+        "interests_raw": ["大熊猫", "火锅"],
+    })
+    assert p.interests_raw == ["大熊猫", "火锅"]
+    assert p.interests == ["美食", "自然"]
+
+
+async def test_search_merges_raw_interests(stub_external_tools, monkeypatch):
+    """研究阶段应把原话词并入搜索关键词（大熊猫→高德能搜到熊猫基地）。"""
+    import asyncio
+    from types import SimpleNamespace
+
+    import app.core.travel.agents.research_agent as ra
+
+    seen_keywords = []
+
+    async def fake_search(inputs, **kwargs):
+        seen_keywords.append(list(inputs["interests"]))
+        return [{"name": f"poi_{inputs['interests']}", "lat": 30.0, "lon": 120.0,
+                 "category": "x", "rating": 4.0}]
+
+    async def fake_routes(inputs, **kwargs):
+        return [{"origin": "a", "destination": "b", "distance_km": 1,
+                 "duration_min": 5, "mode": "driving"}]
+
+    monkeypatch.setattr(ra, "search_places", SimpleNamespace(ainvoke=fake_search))
+    monkeypatch.setattr(ra, "estimate_routes_batch", SimpleNamespace(ainvoke=fake_routes))
+
+    state = {"preferences": {"destination": "成都", "days": 2,
+                             "interests": ["美食"], "interests_raw": ["大熊猫"]},
+             "user_input": "成都看大熊猫"}
+    result = await ra._research_deterministic(
+        "成都", ["美食"], 2, query_hint="成都看大熊猫", raw_interests=["大熊猫"],
+    )
+    assert result["pois"]
+    assert "大熊猫" in seen_keywords[0] and "美食" in seen_keywords[0]

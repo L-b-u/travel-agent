@@ -27,7 +27,11 @@ class TravelPreferences(BaseModel):
     destination: str = Field(default="杭州", description="目的地城市名（中国城市）")
     days: int = Field(default=2, ge=1, le=30, description="旅行天数")
     budget: float = Field(default=0, ge=0, description="总预算（元），0 表示无限制")
-    interests: list[str] = Field(default_factory=list, description="兴趣列表")
+    interests: list[str] = Field(default_factory=list, description="兴趣类别（受控词表，供分类逻辑用）")
+    interests_raw: list[str] = Field(
+        default_factory=list,
+        description="用户原话中的兴趣词（如'大熊猫'），未归类，供 POI 检索直接当关键词",
+    )
     companions: Literal["solo", "couple", "family", "friends"] = Field(
         default="solo", description="同行人类型",
     )
@@ -36,6 +40,21 @@ class TravelPreferences(BaseModel):
     )
     start_date: str | None = Field(default=None, description="出发日期 YYYY-MM-DD，未提及为 null")
     notes: str = Field(default="", description="补充说明")
+
+    @field_validator("interests_raw", mode="before")
+    @classmethod
+    def _clean_interests_raw(cls, v: Any) -> list[str]:
+        """原话词只做去空格/去重/截断，不归类不丢弃。"""
+        if not isinstance(v, list):
+            return []
+        seen: set = set()
+        result: list[str] = []
+        for item in v:
+            word = str(item).strip()
+            if word and len(word) <= 20 and word not in seen:
+                seen.add(word)
+                result.append(word)
+        return result[:8]
 
     @field_validator("companions", mode="before")
     @classmethod
@@ -110,9 +129,9 @@ PREFERENCE_SYSTEM_PROMPT = """你是一个旅行偏好分析助手。从用户�
 - days 默认为 2，范围 1-30
 - budget 为 0 表示无限制
 - interests 从以下选择：景点、美食、博物馆、自然、历史、购物、宗教、建筑、公园、咖啡
+- interests_raw 原样保留用户提到的具体兴趣词（如"大熊猫""洪崖洞""火锅"），不归类不翻译
+- 类别映射参考："大熊猫/动物园/雪山"→自然，"火锅/小面/小吃"→美食，"古镇/故宫"→历史
 - 只提取用户明确提到的兴趣，不要根据目的地推断用户未提及的兴趣
-- 用户提到具体事物时映射为最接近的类别："大熊猫/动物园/雪山"→自然，
-  "火锅/小面/小吃"→美食，"古镇/故宫"→历史，"游乐园"→景点；不要输出类别以外的词
 - companions: solo/couple/family/friends；accommodation: budget/mid/luxury
 - 缺失字段使用合理默认值
 - start_date 必须是具体日期（YYYY-MM-DD）。把用户的相对时间表达结合"当前日期与星期"
@@ -266,11 +285,16 @@ def _fallback_parse(user_input: str, prefs: dict[str, Any]) -> None:
         "建筑": "建筑",
     }
     detected = []
+    raw_hits = []
     for kw, cat in interest_keywords.items():
-        if kw.lower() in user_input.lower() and cat not in detected:
-            detected.append(cat)
+        if kw.lower() in user_input.lower():
+            raw_hits.append(kw)
+            if cat not in detected:
+                detected.append(cat)
     if detected:
         prefs["interests"] = detected
+    if raw_hits:
+        prefs["interests_raw"] = list(dict.fromkeys(raw_hits))[:8]
 
     # 同行人
     if any(w in user_input for w in ["情侣", "女朋友", "男朋友", "对象", "couple"]):

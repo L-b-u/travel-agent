@@ -77,14 +77,21 @@ def _build_react_tools(
             interests: 兴趣列表，如 ["博物馆", "美食"]
             limit: 每类兴趣最多返回数量
         """
+        # 用户原话词（如"大熊猫"）并入检索：类别词供分类逻辑，原话词保证召回
+        raw_terms: list[str] = capture.get("raw_interests", [])
+        effective = list(dict.fromkeys([*interests, *raw_terms]))
+
         # 幂等缓存：LLM 偶尔会重复发完全相同的搜索，命中则不打 API
-        cache_key = (destination.strip(), tuple(sorted(i.strip() for i in interests)))
+        cache_key = (
+            destination.strip(),
+            tuple(sorted(i.strip() for i in effective)),
+        )
         poi_cache: dict = capture.setdefault("_poi_search_cache", {})
         if cache_key in poi_cache:
             cached = poi_cache[cache_key]
             trace.append({
                 "tool": "search_pois",
-                "args": {"destination": destination, "interests": interests},
+                "args": {"destination": destination, "interests": effective},
                 "returned": len(cached),
                 "cached": True,
                 "duration_ms": 0,
@@ -94,7 +101,7 @@ def _build_react_tools(
         t0 = time.perf_counter()
         result = await search_places.ainvoke({
             "destination": destination,
-            "interests": interests,
+            "interests": effective,
             "radius": 8000,
             "limit": min(max(limit, 3), 15),
             "api_key": amap_key,
@@ -108,7 +115,7 @@ def _build_react_tools(
                 pool[name] = poi
         trace.append({
             "tool": "search_pois",
-            "args": {"destination": destination, "interests": interests},
+            "args": {"destination": destination, "interests": effective},
             "returned": len(result),
             "duration_ms": round((time.perf_counter() - t0) * 1000),
         })
@@ -185,6 +192,9 @@ async def research_node(state: TravelState, config: RunnableConfig) -> dict[str,
     preferences = state.get("preferences", {})
     destination = preferences.get("destination", "杭州")
     interests = preferences.get("interests") or ["景点", "美食"]
+    raw_interests = [
+        str(w).strip() for w in (preferences.get("interests_raw") or []) if str(w).strip()
+    ]
     days = preferences.get("days", 2)
 
     llm = config.get("configurable", {}).get("llm")
@@ -196,7 +206,10 @@ async def research_node(state: TravelState, config: RunnableConfig) -> dict[str,
         except Exception as e:
             logger.warning("ReAct 研究失败，降级到确定性流水线: {}", e)
 
-    return await _research_deterministic(destination, interests, days, query_hint=state.get("user_input", ""))
+    return await _research_deterministic(
+        destination, interests, days,
+        query_hint=state.get("user_input", ""), raw_interests=raw_interests,
+    )
 
 
 async def _research_with_agent(
@@ -212,8 +225,10 @@ async def _research_with_agent(
     interests = preferences.get("interests") or ["景点", "美食"]
     days = preferences.get("days", 2)
     amap_key = get_settings().amap_api_key
+    # 原话兴趣词并入 side-channel：search_pois 工具会自动合并进检索关键词
+    raw_interests = [str(w).strip() for w in (preferences.get("interests_raw") or [])]
 
-    capture: dict[str, Any] = {}
+    capture: dict[str, Any] = {"raw_interests": raw_interests}
     trace: list[dict[str, Any]] = []
     tools = _build_react_tools(amap_key, capture, trace)
 
@@ -302,15 +317,18 @@ async def _research_deterministic(
     interests: list[str],
     days: int,
     query_hint: str = "",
+    raw_interests: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     确定性兜底路径：原 POI 搜索 + 贪心路线规划逻辑收编于此。
 
     不依赖 LLM：搜索按兴趣直查、按天贪心分组后批量估路线。
     query_hint（用户原话）作为攻略检索查询，比兴趣词更能命中具体关切（如高反、预约）。
+    raw_interests（用户原话兴趣词，如"大熊猫"）并入搜索关键词保证召回。
     """
     amap_key = get_settings().amap_api_key
     trace: list[dict[str, Any]] = []
+    effective_interests = list(dict.fromkeys([*interests, *(raw_interests or [])]))
 
     # ---- 1. 攻略检索（不依赖网络 API，离线可用）----
     tips = _fetch_tips_deterministic(destination, interests, query_hint)
@@ -320,7 +338,7 @@ async def _research_deterministic(
     try:
         pois = await search_places.ainvoke({
             "destination": destination,
-            "interests": interests,
+            "interests": effective_interests,
             "radius": 8000,
             "limit": 15,
             "api_key": amap_key,
