@@ -28,6 +28,13 @@ class Settings(BaseSettings):
         description="OpenAI 兼容 API Base",
     )
     openai_model: str = Field(default="gpt-4o-mini", description="默认对话模型")
+    openai_extra_body: dict = Field(
+        default_factory=dict,
+        description=(
+            "附加请求体参数（JSON），透传给 OpenAI 兼容端点。"
+            '例：DeepSeek 系思考型模型关思考 {"thinking": {"type": "disabled"}}'
+        ),
+    )
 
     # ---- 可观测性（可选）----
     # LangSmith：无需代码，设置 LANGSMITH_TRACING=true + LANGSMITH_API_KEY 即自动上报
@@ -86,6 +93,7 @@ def build_llm_router():
         model_id=settings.openai_model,
         api_key=settings.openai_api_key,
         base_url=settings.openai_api_base,
+        extra=dict(settings.openai_extra_body),
     )
 
     logger.info("LLM 路由器已构建，主模型: {}", settings.openai_model)

@@ -99,6 +99,9 @@ class ModelRouter:
             }
             if cfg.base_url:
                 kwargs["base_url"] = cfg.base_url
+            if cfg.extra:
+                # 附加请求体参数（如 DeepSeek 系 {"thinking": {"type": "disabled"}} 关思考模式）
+                kwargs["extra_body"] = cfg.extra
             self._clients[cfg.model_id] = ChatOpenAI(**kwargs)
 
     @property
