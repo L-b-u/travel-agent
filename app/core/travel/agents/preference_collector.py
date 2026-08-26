@@ -111,6 +111,8 @@ PREFERENCE_SYSTEM_PROMPT = """你是一个旅行偏好分析助手。从用户�
 - budget 为 0 表示无限制
 - interests 从以下选择：景点、美食、博物馆、自然、历史、购物、宗教、建筑、公园、咖啡
 - 只提取用户明确提到的兴趣，不要根据目的地推断用户未提及的兴趣
+- 用户提到具体事物时映射为最接近的类别："大熊猫/动物园/雪山"→自然，
+  "火锅/小面/小吃"→美食，"古镇/故宫"→历史，"游乐园"→景点；不要输出类别以外的词
 - companions: solo/couple/family/friends；accommodation: budget/mid/luxury
 - 缺失字段使用合理默认值
 - start_date 必须是具体日期（YYYY-MM-DD）。把用户的相对时间表达结合"当前日期与星期"

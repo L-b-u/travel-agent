@@ -70,12 +70,27 @@ def _build_react_tools(
         limit: int = 8,
     ) -> list[dict[str, Any]]:
         """搜索目的地的兴趣点（景点/美食/博物馆等）。返回名称、评分、坐标、地址、类别。
+        相同参数的重复调用会直接返回缓存结果。
 
         Args:
             destination: 目的地城市名，如 "杭州"
             interests: 兴趣列表，如 ["博物馆", "美食"]
             limit: 每类兴趣最多返回数量
         """
+        # 幂等缓存：LLM 偶尔会重复发完全相同的搜索，命中则不打 API
+        cache_key = (destination.strip(), tuple(sorted(i.strip() for i in interests)))
+        poi_cache: dict = capture.setdefault("_poi_search_cache", {})
+        if cache_key in poi_cache:
+            cached = poi_cache[cache_key]
+            trace.append({
+                "tool": "search_pois",
+                "args": {"destination": destination, "interests": interests},
+                "returned": len(cached),
+                "cached": True,
+                "duration_ms": 0,
+            })
+            return cached
+
         t0 = time.perf_counter()
         result = await search_places.ainvoke({
             "destination": destination,
@@ -84,6 +99,7 @@ def _build_react_tools(
             "limit": min(max(limit, 3), 15),
             "api_key": amap_key,
         })
+        poi_cache[cache_key] = result
         # side-channel：按名称去重累积
         pool: dict[str, dict[str, Any]] = capture.setdefault("pois", {})
         for poi in result:
