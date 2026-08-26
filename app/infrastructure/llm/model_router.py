@@ -1,16 +1,32 @@
 # -*- coding: utf-8 -*-
-"""LLM 路由器：基于 LangChain ChatOpenAI，失败时简单重试，LLM 不可用时由各节点 try/except 自动降级。"""
+"""LLM 路由器：基于 LangChain ChatOpenAI 的统一 LLM 接入层。
+
+职责：
+- 纯文本生成（ainvoke）：内部流式接收避免长请求被断连，瞬时失败按指数退避重试；
+- 结构化输出（ainvoke_structured）：基于 with_structured_output，供偏好收集等节点使用；
+- 工具绑定（chat_model）：暴露底层 ChatOpenAI，供 create_react_agent 做 Tool Calling；
+- 可观测性：Token 用量日志；配置 LANGFUSE_* 环境变量后自动接入 Langfuse trace。
+
+LLM 不可用时由各节点 try/except 自动降级到规则兜底。
+"""
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable, Optional, TypeVar
 
 from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 from loguru import logger
 from openai import APIError, RateLimitError
+from pydantic import BaseModel
+
+T = TypeVar("T", bound=BaseModel)
+
+# 流式进度回调：每收到一个 chunk 调用一次，参数为"累积全文快照"
+# （传快照而非增量，重试导致的部分输出可被调用方直接覆盖）
+TokenCallback = Callable[[str], None]
 
 
 @dataclass
@@ -23,19 +39,49 @@ class ModelConfig:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+def _observability_callbacks() -> list[Any]:
+    """构建可观测性回调列表。
+
+    配置了 LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY 时返回 Langfuse
+    CallbackHandler（自动上报每次 LLM 调用的输入/输出/Token/耗时），
+    否则返回空列表。任何异常都不应阻断主流程。
+    """
+    try:
+        from app.config import get_settings
+
+        settings = get_settings()
+        if not (settings.langfuse_public_key and settings.langfuse_secret_key):
+            return []
+        from langfuse.langchain import CallbackHandler
+
+        logger.info("Langfuse 观测已启用: {}", settings.langfuse_host)
+        return [CallbackHandler()]
+    except Exception as e:  # pragma: no cover - 可选依赖缺失/未配置时静默
+        logger.debug("可观测性回调未启用: {}", e)
+        return []
+
+
 class ModelRouter:
-    """LLM 路由器：基于 LangChain ChatOpenAI，瞬时失败按指数退避重试。
+    """LLM 路由器：统一文本生成 / 结构化输出 / 工具绑定三种调用形态。
 
     单模型场景下不做多模型调度；调用方（各 Agent 节点）已有 try/except 兜底，
     重试耗尽后抛出的异常会触发规则降级路径。
     """
 
-    def __init__(self, model_configs: list[ModelConfig], *, max_retries: int = 2) -> None:
+    def __init__(
+        self,
+        model_configs: list[ModelConfig],
+        *,
+        max_retries: int = 2,
+        callbacks: list[Any] | None = None,
+    ) -> None:
         if not model_configs:
             raise ValueError("model_configs 不能为空")
 
         self._configs = list(model_configs)
         self._max_retries = max(1, max_retries)
+        # Langfuse 等 LangChain 兼容回调（可为空）
+        self._callbacks = callbacks if callbacks is not None else _observability_callbacks()
         # 使用 LangChain ChatOpenAI 作为统一 LLM 客户端
         self._clients: dict[str, ChatOpenAI] = {}
         for cfg in self._configs:
@@ -43,7 +89,7 @@ class ModelRouter:
                 "api_key": cfg.api_key,
                 "model": cfg.model_id,
                 "timeout": 120,       # 请求超时 120 秒（行程生成约需 60-90 秒）
-                "max_retries": 1,     # ChatOpenAI 内部重试 1 次（避免长时间等待）
+                "max_retries": 1,     # ChatOpenAI 内部重试 1 次（外层还有指数退避重试）
             }
             if cfg.base_url:
                 kwargs["base_url"] = cfg.base_url
@@ -54,13 +100,43 @@ class ModelRouter:
         """主模型 ID（用于日志标注）。"""
         return self._configs[0].model_id
 
-    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> AIMessage:
+    @property
+    def chat_model(self) -> ChatOpenAI:
+        """底层 ChatOpenAI 实例。
+
+        供需要原生 Runnable 能力的调用方使用：
+        - create_react_agent(model, tools)：Agent 自行 bind_tools；
+        - .with_structured_output(schema)、.bind_tools(tools) 等。
         """
-        异步调用 LLM；瞬时错误（API/限流/超时）按指数退避重试，全部失败则抛异常。
+        return self._clients[self._configs[0].model_id]
+
+    def _run_config(self, **metadata: Any) -> dict[str, Any]:
+        """构造 RunnableConfig（附带可观测性回调与标签）。"""
+        cfg: dict[str, Any] = {"tags": ["travel-agent"]}
+        if self._callbacks:
+            cfg["callbacks"] = self._callbacks
+        if metadata:
+            cfg["metadata"] = metadata
+        return cfg
+
+    # ------------------------------------------------------------
+    # 纯文本生成
+    # ------------------------------------------------------------
+    async def ainvoke(
+        self,
+        messages: list[Any],
+        *,
+        on_token: TokenCallback | None = None,
+        **kwargs: Any,
+    ) -> AIMessage:
+        """
+        异步调用 LLM 生成文本；瞬时错误按指数退避重试，全部失败则抛异常。
 
         Args:
             messages: LangChain 消息列表（BaseMessage 或 dict 形式均可）
-            **kwargs: 透传给 ChatOpenAI 的参数（如 temperature、max_tokens）
+            on_token: 可选流式回调，每个 chunk 调用一次，参数为累积全文快照
+                （SSE 场景用；重试时会重新从零累积，调用方以最后一次为准）
+            **kwargs: 透传给 ChatOpenAI 的运行时参数（temperature、max_tokens 等）
 
         Returns:
             LangChain AIMessage（含 usage_metadata 与 response_metadata.model_id）
@@ -70,7 +146,7 @@ class ModelRouter:
 
         for attempt in range(1, self._max_retries + 1):
             try:
-                return await self._try_model(cfg.model_id, messages, **kwargs)
+                return await self._try_model(cfg.model_id, messages, on_token=on_token, **kwargs)
             except (APIError, RateLimitError, asyncio.TimeoutError) as exc:
                 last_error = exc
                 logger.warning(
@@ -89,10 +165,70 @@ class ModelRouter:
             f"模型 [{cfg.model_id}] 重试 {self._max_retries} 次后仍不可用"
         ) from last_error
 
+    # ------------------------------------------------------------
+    # 结构化输出
+    # ------------------------------------------------------------
+    async def ainvoke_structured(
+        self,
+        messages: list[Any],
+        schema: type[T],
+        **kwargs: Any,
+    ) -> T:
+        """
+        结构化输出：让 LLM 按 Pydantic Schema 返回解析好的对象。
+
+        基于 ChatOpenAI.with_structured_output（function calling 实现），
+        同样享受指数退避重试。供应商不支持结构化输出时抛出异常，
+        由调用方降级（如规则兜底解析）。
+
+        Args:
+            messages: 消息列表
+            schema: 输出 Pydantic 模型类
+            **kwargs: 透传给 ChatOpenAI 的运行时参数
+
+        Returns:
+            schema 的实例
+        """
+        cfg = self._configs[0]
+        last_error: Exception | None = None
+
+        for attempt in range(1, self._max_retries + 1):
+            try:
+                structured = self.chat_model.with_structured_output(schema, strict=False)
+                t0 = asyncio.get_event_loop().time()
+                result = await structured.ainvoke(messages, config=self._run_config())
+                duration_ms = (asyncio.get_event_loop().time() - t0) * 1000
+                logger.info(
+                    "结构化输出 [{}]: schema={}, 耗时 {:.0f}ms",
+                    cfg.model_id, schema.__name__, duration_ms,
+                )
+                return result
+            except (APIError, RateLimitError, asyncio.TimeoutError) as exc:
+                last_error = exc
+                logger.warning(
+                    "结构化输出 [{}] 第 {}/{} 次失败: {}",
+                    cfg.model_id, attempt, self._max_retries, exc,
+                )
+                if attempt < self._max_retries:
+                    await asyncio.sleep(min(2 ** (attempt - 1), 4))
+            except Exception as exc:
+                last_error = exc
+                logger.exception("结构化输出 [{}] 未预期错误，不重试: {}", cfg.model_id, exc)
+                break
+
+        raise RuntimeError(
+            f"结构化输出 [{cfg.model_id}] 重试 {self._max_retries} 次后仍不可用"
+        ) from last_error
+
+    # ------------------------------------------------------------
+    # 内部：单次调用（流式接收）
+    # ------------------------------------------------------------
     async def _try_model(
         self,
         model_id: str,
         messages: list[Any],
+        *,
+        on_token: TokenCallback | None = None,
         **kwargs: Any,
     ) -> AIMessage:
         """调用指定模型一次（流式接收，避免长请求因服务端非流式超时被断开）。
@@ -115,9 +251,12 @@ class ModelRouter:
             # 流式接收：逐 chunk 拼接，保持连接活跃，避免超时断连
             chunks: list[str] = []
             usage_meta: dict[str, Any] | None = None
-            async for chunk in bound.astream(messages):
+            async for chunk in bound.astream(messages, config=self._run_config()):
                 if chunk.content:
                     chunks.append(chunk.content)
+                    if on_token is not None:
+                        # 回调传累积快照而非增量：重试后从头重来时调用方可直接覆盖
+                        on_token("".join(chunks))
                 # 最后一个 chunk 携带累计 usage
                 um = getattr(chunk, "usage_metadata", None)
                 if um:

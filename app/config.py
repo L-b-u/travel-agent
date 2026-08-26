@@ -29,6 +29,18 @@ class Settings(BaseSettings):
     )
     openai_model: str = Field(default="gpt-4o-mini", description="默认对话模型")
 
+    # ---- 可观测性（可选）----
+    # LangSmith：无需代码，设置 LANGSMITH_TRACING=true + LANGSMITH_API_KEY 即自动上报
+    langfuse_public_key: str = Field(default="", description="Langfuse Public Key（留空禁用）")
+    langfuse_secret_key: str = Field(default="", description="Langfuse Secret Key")
+    langfuse_host: str = Field(default="https://cloud.langfuse.com", description="Langfuse 地址")
+
+    # ---- RAG 攻略检索配置 ----
+    embedding_model: str = Field(
+        default="",
+        description="Embedding 模型名（走 OPENAI_API_BASE；留空则仅用 BM25 词法检索）",
+    )
+
     # ---- Travel Agent 配置 ----
     amap_api_key: str = Field(
         default="",
@@ -37,6 +49,10 @@ class Settings(BaseSettings):
     travel_weather_enabled: bool = Field(
         default=True,
         description="是否启用天气查询",
+    )
+    agent_research_enabled: bool = Field(
+        default=True,
+        description="研究阶段是否用 LLM Tool Calling Agent（False 则回退确定性流水线，便于对比评估）",
     )
 
     log_level: str = Field(default="INFO", description="日志级别")
