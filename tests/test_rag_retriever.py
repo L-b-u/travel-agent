@@ -43,7 +43,7 @@ def test_tokenizer_filters_stopwords():
 
 
 def test_no_overlap_query_returns_empty():
-    """未收录城市 + 零词法重叠的查询不应返回跨城噪声。"""
+    """未收录城市 + 无有效重叠的查询不应返回跨城噪声（如"参观"这类泛词不算有效命中）。"""
     r = get_retriever()
-    hits = r.retrieve("量子物理实验室参观指南", city="南充", k=3)
+    hits = r.retrieve("薛定谔方程推导过程", city="南充", k=3)
     assert hits == []

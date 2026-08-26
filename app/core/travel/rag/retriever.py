@@ -137,13 +137,18 @@ class TravelKnowledgeRetriever:
         ranked = sorted(range(len(fused)), key=lambda i: fused[i], reverse=True)
 
         # 城市偏好：目标城市的块加权提升（而非硬过滤）
+        # 噪声防护：与查询的词法重叠过少的块直接排除——未收录城市的查询
+        # 不应捞到跨城噪声（如南充的行程不该出现三亚海鲜攻略）。
+        # 重叠阈值随查询长度缩放：单/双词查询至少命中 1 词，更长查询至少 2 词。
+        q_token_set = set(q_tokens)
+        min_overlap = min(2, max(len(q_token_set), 1))
         results: list[dict[str, Any]] = []
         seen_sections: set = set()
         for idx in ranked:
-            if bm25_scores[idx] <= 0:
-                continue  # 与查询零词法重叠的块直接排除：
-                # 未收录城市的查询不应捞到跨城噪声（如南充的行程不该出现三亚海鲜攻略）
             c = self._chunks[idx]
+            overlap = len(q_token_set & set(self._tokenized[idx]))
+            if overlap < min_overlap:
+                continue
             boost = 1.15 if (city and c.city == city) else 1.0
             score = fused[idx] * boost
             key = (c.city, c.section)
