@@ -25,22 +25,9 @@ def set_llm_router(router: ModelRouter) -> None:
     _llm_router = router
 
 
-class _LLMWrapper:
-    """将 ModelRouter 适配为 LangChain ainvoke 接口。"""
-
-    def __init__(self, router: ModelRouter) -> None:
-        self._router = router
-
-    async def ainvoke(self, messages: list, **kwargs):
-        """调用 LLM，返回 LangChain AIMessage。"""
-        return await self._router.ainvoke(messages, **kwargs)
-
-
-def _get_llm() -> Optional[Any]:
-    """获取 LLM 实例（具有 LangChain ainvoke 接口）。"""
-    if _llm_router:
-        return _LLMWrapper(_llm_router)
-    return None
+def get_llm_router() -> Optional[ModelRouter]:
+    """获取注入的 LLM 路由器（未配置时为 None，节点走规则兜底）。"""
+    return _llm_router
 
 
 @router.post("/plan", response_model=TravelPlanResponse)
@@ -55,11 +42,10 @@ async def plan_travel(request: TravelRequest):
 
     logger.info("收到旅行规划请求: session={}, input={}", request.session_id, request.user_input[:100])
 
-    llm = _get_llm()
     result = await run_travel_agent(
         user_input=request.user_input,
         session_id=request.session_id,
-        llm=llm,
+        llm=_llm_router,
     )
 
     if result.get("error"):

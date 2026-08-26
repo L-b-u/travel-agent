@@ -30,7 +30,7 @@ async def main(args: argparse.Namespace) -> int:
     router = build_llm_router()
     if router is not None:
         travel.set_llm_router(router)
-        llm = travel._get_llm()
+        llm = travel.get_llm_router()
         logger.info("LLM 已就绪: {}", get_settings().openai_model)
     else:
         llm = None
