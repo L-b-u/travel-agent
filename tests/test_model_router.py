@@ -66,3 +66,20 @@ async def test_all_methods_exhausted_raises(monkeypatch):
     router, _calls = _router(monkeypatch, [err])
     with pytest.raises(RuntimeError):
         await router.ainvoke_structured([{"role": "user", "content": "x"}], _Schema)
+
+
+async def test_working_method_is_remembered(monkeypatch):
+    """首次探测成功后，后续调用直接命中记忆的方式，不再探测注定失败的。"""
+    ok = _Schema(name="ok")
+
+    class Fake400(Exception):
+        status_code = 400
+
+    router, calls = _router(monkeypatch, [Fake400("tool_choice"), ok, ok, ok])
+    await router.ainvoke_structured([{"role": "user", "content": "x"}], _Schema)
+    assert len(calls) == 2  # FC 失败 + json_mode 成功
+
+    # 后续两次调用都应直接走 json_mode（无 FC 探测）
+    await router.ainvoke_structured([{"role": "user", "content": "x"}], _Schema)
+    await router.ainvoke_structured([{"role": "user", "content": "x"}], _Schema)
+    assert len(calls) == 4

@@ -109,6 +109,10 @@ class ModelRouter:
                 kwargs["extra_body"] = cfg.extra
             self._clients[cfg.model_id] = ChatOpenAI(**kwargs)
 
+        # 结构化输出实现方式记忆：首次探测出网关支持的方式后，后续调用直接命中，
+        # 不再每次浪费一次注定失败的探测往返
+        self._structured_method: str | None = None
+
     @property
     def primary_model_id(self) -> str:
         """主模型 ID（用于日志标注）。"""
@@ -209,7 +213,13 @@ class ModelRouter:
         cfg = self._configs[0]
         last_error: Exception | None = None
 
-        for method in ("function_calling", "json_mode"):
+        # 方式优先级：优先用上次探测成功的（避免每次重复探测注定失败的）
+        methods = ["function_calling", "json_mode"]
+        if self._structured_method in methods:
+            methods.remove(self._structured_method)
+            methods.insert(0, self._structured_method)
+
+        for method in methods:
             for attempt in range(1, self._max_retries + 1):
                 try:
                     if method == "json_mode":
@@ -220,6 +230,9 @@ class ModelRouter:
                     t0 = asyncio.get_event_loop().time()
                     result = await structured.ainvoke(messages, config=self._run_config())
                     duration_ms = (asyncio.get_event_loop().time() - t0) * 1000
+                    if self._structured_method != method:
+                        logger.info("结构化输出方式记忆: {} -> {}", cfg.model_id, method)
+                    self._structured_method = method
                     logger.info(
                         "结构化输出 [{}]({}): schema={}, 耗时 {:.0f}ms",
                         cfg.model_id, method, schema.__name__, duration_ms,
@@ -234,7 +247,10 @@ class ModelRouter:
                         delay = 0.5
                         detail = str(exc)[:150]
                     elif _is_bad_request(exc):
-                        # 400 参数类错误重试无意义：立即切换实现方式
+                        # 400 参数类错误重试无意义：立即切换实现方式；
+                        # 若失败的是记忆中的方式，清除记忆让下次重新探测
+                        if self._structured_method == method:
+                            self._structured_method = None
                         logger.warning(
                             "结构化输出 [{}] 不支持 {} 方式: {}",
                             cfg.model_id, method, str(exc)[:120],
