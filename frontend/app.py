@@ -20,6 +20,10 @@ import streamlit as st
 
 API_BASE = "http://127.0.0.1:8000/api/v1"
 
+# trust_env=False：绕过系统代理。httpx 默认读取 HTTP_PROXY 等环境变量，
+# 会把发往 127.0.0.1 的请求也交给代理，导致 502 / 空响应（本地 Demo 常见坑）
+client = httpx.Client(trust_env=False, timeout=300)
+
 st.set_page_config(page_title="Travel Agent", page_icon="🧳", layout="wide")
 st.title("🧳 Travel Agent")
 st.caption("LangGraph 多 Agent 旅行规划 · ReAct 工具调用 · RAG 攻略检索 · HITL 安全确认")
@@ -37,33 +41,56 @@ def stream_plan(user_input: str, session_id: str, placeholder) -> dict | None:
     """调 SSE 接口，逐段渲染行程，返回最终 result 数据（confirm 时返回 None）。"""
     final = None
     text = ""
-    with httpx.stream(
-        "POST",
-        f"{API_BASE}/travel/plan/stream",
-        json={"user_input": user_input, "session_id": session_id},
-        timeout=300,
-    ) as resp:
-        for line in resp.iter_lines():
-            if not line.startswith("data: "):
-                continue
-            event = json.loads(line[6:])
-            etype = event["type"]
-            if etype == "delta":
-                text += event["text"]
-                placeholder.markdown(text + "▌")
-            elif etype == "result":
-                final = event["data"]
-                placeholder.markdown(final["itinerary"])
-            elif etype == "confirm":
-                st.session_state.pending = {
-                    "items": event.get("items", []),
-                    "safety_result": event.get("safety_result", {}),
-                }
-                placeholder.empty()
+    try:
+        with client.stream(
+            "POST",
+            f"{API_BASE}/travel/plan/stream",
+            json={"user_input": user_input, "session_id": session_id},
+        ) as resp:
+            if resp.status_code != 200:
+                body = resp.read().decode("utf-8", errors="replace")[:300]
+                placeholder.error(f"后端返回 HTTP {resp.status_code}: {body}")
                 return None
-            elif etype == "error":
-                placeholder.error(f"规划失败: {event.get('message')}")
-                return None
+
+            got_terminal_event = False
+            for line in resp.iter_lines():
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    event = json.loads(line[6:])
+                except json.JSONDecodeError:
+                    continue
+                etype = event["type"]
+                if etype == "delta":
+                    text += event["text"]
+                    placeholder.markdown(text + "▌")
+                elif etype == "result":
+                    final = event["data"]
+                    placeholder.markdown(final["itinerary"])
+                    got_terminal_event = True
+                elif etype == "confirm":
+                    st.session_state.pending = {
+                        "items": event.get("items", []),
+                        "safety_result": event.get("safety_result", {}),
+                    }
+                    placeholder.empty()
+                    return None
+                elif etype == "error":
+                    placeholder.error(f"规划失败: {event.get('message')}")
+                    return None
+
+            if not got_terminal_event:
+                # 连接提前断开且无任何终态事件：多半是后端中途崩溃或被代理截断
+                placeholder.error(
+                    "连接中断且未收到完整结果。\n\n"
+                    f"请确认后端已在 8000 端口运行：`uvicorn app.main:app --port 8000`\n\n"
+                    f"已接收内容长度：{len(text)} 字符"
+                )
+    except httpx.HTTPError as e:
+        placeholder.error(
+            f"无法连接后端 `{API_BASE}`：{e!r}\n\n"
+            "请先启动服务：`uvicorn app.main:app --port 8000`"
+        )
     return final
 
 
@@ -83,10 +110,9 @@ def submit_decision(approved: bool) -> None:
     """提交人工确认决定并展示结果。"""
     st.session_state.pop("pending")
     with st.spinner("已确认，继续处理…" if approved else "正在取消…"):
-        resp = httpx.post(
+        resp = client.post(
             f"{API_BASE}/travel/confirm",
             json={"session_id": st.session_state.session_id, "approved": approved},
-            timeout=300,
         )
     if resp.status_code != 200:
         st.error(f"确认失败: {resp.text}")
