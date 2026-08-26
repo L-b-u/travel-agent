@@ -83,3 +83,26 @@ async def test_working_method_is_remembered(monkeypatch):
     await router.ainvoke_structured([{"role": "user", "content": "x"}], _Schema)
     await router.ainvoke_structured([{"role": "user", "content": "x"}], _Schema)
     assert len(calls) == 4
+
+
+async def test_pinned_method_skips_probing(monkeypatch):
+    """显式钉死方式时不探测其他实现，无多余往返。"""
+    router = ModelRouter(
+        [ModelConfig(model_id="fake", api_key="k")],
+        callbacks=[],
+        structured_method="json_mode",
+    )
+    calls = []
+
+    class FakeStructured:
+        async def ainvoke(self, messages, config=None):
+            calls.append(1)
+            return _Schema(name="ok")
+
+    monkeypatch.setattr(
+        router.chat_model.__class__,
+        "with_structured_output",
+        lambda self, schema, strict=None, method="function_calling": FakeStructured(),
+    )
+    await router.ainvoke_structured([{"role": "user", "content": "x"}], _Schema)
+    assert len(calls) == 1  # 只调一次 json_mode

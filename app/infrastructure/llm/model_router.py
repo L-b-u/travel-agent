@@ -85,6 +85,7 @@ class ModelRouter:
         *,
         max_retries: int = 2,
         callbacks: list[Any] | None = None,
+        structured_method: str | None = None,
     ) -> None:
         if not model_configs:
             raise ValueError("model_configs 不能为空")
@@ -109,9 +110,11 @@ class ModelRouter:
                 kwargs["extra_body"] = cfg.extra
             self._clients[cfg.model_id] = ChatOpenAI(**kwargs)
 
-        # 结构化输出实现方式记忆：首次探测出网关支持的方式后，后续调用直接命中，
-        # 不再每次浪费一次注定失败的探测往返
-        self._structured_method: str | None = None
+        # 结构化输出实现方式：
+        # - 显式指定（OPENAI_STRUCTURED_METHOD）→ 只用该方式，不探测；
+        # - 未指定 → 自动探测并记忆（_structured_method_cached），进程内只探测一次
+        self._structured_method = structured_method
+        self._structured_method_cached: str | None = None
 
     @property
     def primary_model_id(self) -> str:
@@ -213,11 +216,14 @@ class ModelRouter:
         cfg = self._configs[0]
         last_error: Exception | None = None
 
-        # 方式优先级：优先用上次探测成功的（避免每次重复探测注定失败的）
-        methods = ["function_calling", "json_mode"]
-        if self._structured_method in methods:
-            methods.remove(self._structured_method)
-            methods.insert(0, self._structured_method)
+        # 方式序列：显式钉死时只用该方式；否则优先记忆值，默认探测链兜底
+        if self._structured_method:
+            methods = [self._structured_method]
+        else:
+            methods = ["function_calling", "json_mode"]
+            if self._structured_method_cached in methods:
+                methods.remove(self._structured_method_cached)
+                methods.insert(0, self._structured_method_cached)
 
         for method in methods:
             for attempt in range(1, self._max_retries + 1):
@@ -230,9 +236,9 @@ class ModelRouter:
                     t0 = asyncio.get_event_loop().time()
                     result = await structured.ainvoke(messages, config=self._run_config())
                     duration_ms = (asyncio.get_event_loop().time() - t0) * 1000
-                    if self._structured_method != method:
+                    if self._structured_method_cached != method:
                         logger.info("结构化输出方式记忆: {} -> {}", cfg.model_id, method)
-                    self._structured_method = method
+                    self._structured_method_cached = method
                     logger.info(
                         "结构化输出 [{}]({}): schema={}, 耗时 {:.0f}ms",
                         cfg.model_id, method, schema.__name__, duration_ms,
@@ -249,8 +255,8 @@ class ModelRouter:
                     elif _is_bad_request(exc):
                         # 400 参数类错误重试无意义：立即切换实现方式；
                         # 若失败的是记忆中的方式，清除记忆让下次重新探测
-                        if self._structured_method == method:
-                            self._structured_method = None
+                        if self._structured_method_cached == method:
+                            self._structured_method_cached = None
                         logger.warning(
                             "结构化输出 [{}] 不支持 {} 方式: {}",
                             cfg.model_id, method, str(exc)[:120],

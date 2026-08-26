@@ -35,6 +35,13 @@ class Settings(BaseSettings):
             '例：DeepSeek 系思考型模型关思考 {"thinking": {"type": "disabled"}}'
         ),
     )
+    openai_structured_method: str = Field(
+        default="",
+        description=(
+            '结构化输出实现方式：留空(自动探测并记忆)；'
+            '或钉死为 "function_calling" / "json_mode"（已知网关能力时可省去探测）'
+        ),
+    )
 
     # ---- 可观测性（可选）----
     # LangSmith：无需代码，设置 LANGSMITH_TRACING=true + LANGSMITH_API_KEY 即自动上报
@@ -97,4 +104,4 @@ def build_llm_router():
     )
 
     logger.info("LLM 路由器已构建，主模型: {}", settings.openai_model)
-    return ModelRouter([primary])
+    return ModelRouter([primary], structured_method=settings.openai_structured_method or None)
