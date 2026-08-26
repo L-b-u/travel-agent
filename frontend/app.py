@@ -74,7 +74,9 @@ def stream_plan(user_input: str, session_id: str, placeholder) -> dict | None:
                         "safety_result": event.get("safety_result", {}),
                     }
                     placeholder.empty()
-                    return None
+                    # 立即重渲染页面：确认按钮面板在脚本前段，pending 是在这里才设置的，
+                    # 不主动触发 rerun 的话按钮要等下一次交互才会出现
+                    st.rerun()
                 elif etype == "error":
                     placeholder.error(f"规划失败: {event.get('message')}")
                     return None
