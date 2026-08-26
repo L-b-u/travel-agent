@@ -1,6 +1,6 @@
 # Travel Agent — 基于 LangChain + LangGraph 的 LLM Agent 工程化实践
 
-> 🎓 应届生求职项目 | 题材是载体，工程实践是核心：Workflow vs Agent 取舍、HITL 落地、双层安全审查、Eval 评估体系、全链路降级
+> 题材是载体，工程实践是核心：Workflow vs Agent 取舍、HITL 落地、双层安全审查、Eval 评估体系、全链路降级
 
 ## 项目简介
 
