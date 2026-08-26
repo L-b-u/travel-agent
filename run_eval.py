@@ -49,7 +49,7 @@ async def main(args: argparse.Namespace) -> int:
 
     # 运行评估
     start_time = datetime.now()
-    summary = await runner.run(llm=llm)
+    summary = await runner.run(llm=llm, use_judge=not args.no_judge)
     elapsed = (datetime.now() - start_time).total_seconds()
 
     # 打印报告
@@ -73,6 +73,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Travel Agent 评估脚本")
     parser.add_argument("--type", type=str, default=None,
                         help="只运行指定类型的用例（常规规划/预算约束/偏好约束/变化处理/安全边界）")
+    parser.add_argument("--no-judge", action="store_true",
+                        help="跳过 LLM-as-judge 评分（只跑规则检查，速度快）")
     parser.add_argument("--output", type=str, default=None,
                         help="评估结果保存路径（JSON）")
     args = parser.parse_args()

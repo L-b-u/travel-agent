@@ -3,14 +3,20 @@
 LangGraph 状态图：编排 Travel Agent 流水线。
 
 流程：
-    collect_preferences → research（ReAct 工具调用）
-                        → check_weather ──┐  (Fan-out 并行，确定性保证覆盖)
-                        → estimate_budget ┘
-                        → synthesize → safety_review → human_gate → END
+    input_guard ─┬─(风险)──────────────→ human_gate ─┬─(批准·继续)→ collect_preferences
+                 └─(通过)→ collect_preferences         ├─(批准·行程已成)→ END
+                          → research（ReAct 工具调用）  └─(拒绝)→ END（取消说明）
+                          → check_weather ──┐ (Fan-out 并行)
+                          → estimate_budget ┘
+                          → synthesize → safety_review ─┬─(风险)→ human_gate
+                                                        └─(通过)→ END
 
-研究阶段由 LLM 通过 Tool Calling 自主探索（搜 POI、估路线）；
-天气与预算是必须覆盖的关键数据，走确定性并行节点；
-安全审查发现风险时，human_gate 节点通过 interrupt() 中断等待人工确认（HITL）。
+设计要点：
+- fail-fast：入口守卫在消耗任何 LLM/API 资源前拦截输入侧风险；
+- 研究阶段由 LLM 通过 Tool Calling 自主探索；天气与预算是关键数据，
+  走确定性并行节点保证覆盖；
+- 双层审查 + HITL：输入侧在入口、输出侧在合成后；命中即 interrupt() 中断，
+  人工批准后输入侧风险可继续规划（input_confirmed 防止重复拦截）。
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ from app.core.travel.agents import (
     safety_review_node,
     synthesize_node,
 )
+from app.core.travel.agents.safety_reviewer import input_guard_node
 from app.core.travel.state import TravelState
 
 
@@ -39,36 +46,44 @@ def build_travel_graph() -> StateGraph:
     workflow = StateGraph(TravelState)
 
     # ---- 添加节点 ----
+    workflow.add_node("input_guard", input_guard_node)
     workflow.add_node("collect_preferences", collect_preferences_node)
     workflow.add_node("research", research_node)
     workflow.add_node("check_weather", check_weather_node)
     workflow.add_node("estimate_budget", estimate_budget_node)
     workflow.add_node("synthesize", synthesize_node)
     workflow.add_node("safety_review", safety_review_node)
+    workflow.add_node("human_gate", human_gate_node)
 
     # ---- 设置边 ----
-    workflow.set_entry_point("collect_preferences")
+    workflow.set_entry_point("input_guard")
 
-    # 顺序链路：偏好 → 研究（Tool Calling）
+    # 入口守卫：命中风险直接进人工门（fail-fast），否则开始规划
+    workflow.add_conditional_edges(
+        "input_guard",
+        _route_after_input_guard,
+        {"gate": "human_gate", "plan": "collect_preferences"},
+    )
+
+    # 规划主链路：偏好 → 研究（Tool Calling）→ 天气/预算并行 → 合成 → 输出侧审查
     workflow.add_edge("collect_preferences", "research")
-
-    # Fan-out: 并行分发到天气和预算（确定性节点）
     workflow.add_edge("research", "check_weather")
     workflow.add_edge("research", "estimate_budget")
-
-    # Fan-in: 汇聚到合成节点
     workflow.add_edge("check_weather", "synthesize")
     workflow.add_edge("estimate_budget", "synthesize")
-
-    # 合成 → 安全审查 → 人工确认门 → 结束
     workflow.add_edge("synthesize", "safety_review")
     workflow.add_conditional_edges(
         "safety_review",
         _route_after_safety,
         {"gate": "human_gate", "end": END},
     )
-    workflow.add_node("human_gate", human_gate_node)
-    workflow.add_edge("human_gate", END)
+
+    # 人工门：拒绝→结束；批准且行程已生成→结束；批准但输入侧拦截（无行程）→继续规划
+    workflow.add_conditional_edges(
+        "human_gate",
+        _route_after_gate,
+        {"continue_plan": "collect_preferences", "end": END},
+    )
 
     memory = MemorySaver()
     graph = workflow.compile(checkpointer=memory)
@@ -77,28 +92,46 @@ def build_travel_graph() -> StateGraph:
     return graph
 
 
+def _route_after_input_guard(state: TravelState) -> str:
+    """入口守卫路由：有需确认项则进人工门。"""
+    return "gate" if state.get("requires_confirmation") else "plan"
+
+
 def _route_after_safety(state: TravelState) -> str:
-    """安全审查后的路由：有需确认项则进人工确认门，否则直接结束。"""
+    """输出侧审查后的路由：有需确认项则进人工门。"""
     return "gate" if state.get("requires_confirmation") else "end"
+
+
+def _route_after_gate(state: TravelState) -> str:
+    """人工门之后的路由：
+    - 批准且已有行程 → 交付；
+    - 批准但行程为空（输入侧拦截后放行）→ 继续规划主流程；
+    - 拒绝 → 结束（取消说明已写入行程字段）。
+    """
+    decision = state.get("confirmation_decision", {})
+    if decision.get("approved") and not state.get("itinerary"):
+        return "continue_plan"
+    return "end"
 
 
 async def human_gate_node(state: TravelState) -> Dict[str, Any]:
     """
     人工确认门（HITL）。
 
-    安全审查发现需确认项时，通过 interrupt() 中断图执行，将待确认事项抛给
-    调用方；调用方以 Command(resume={"approved": bool, "note": str}) 恢复。
-    resume 后本节点从头重跑，第二次执行时 interrupt() 返回用户决定。
+    审查（入口守卫或输出侧审查）发现需确认项时，通过 interrupt() 中断图执行，
+    将待确认事项抛给调用方；调用方以 Command(resume={"approved": bool, "note": str})
+    恢复。resume 后本节点从头重跑，第二次执行时 interrupt() 返回用户决定。
 
-    - 批准：行程照常交付，追加"已人工确认"记录；
-    - 拒绝：行程替换为取消说明（明确未执行任何敏感操作），status="cancelled"。
+    - 批准 + 行程已生成：追加"已人工确认"记录后交付；
+    - 批准 + 行程为空（入口守卫拦截）：标记 input_confirmed 后回到规划主流程；
+    - 拒绝：写入取消说明（明确未执行任何敏感操作），status="cancelled"。
     """
     if not state.get("requires_confirmation"):
         return {"status": "completed"}
 
     decision = interrupt({
         "type": "safety_confirmation",
-        "question": "行程包含需要你确认的操作请求，确认后才会继续",
+        "question": "请求包含需要你确认的操作，确认后才会继续",
         "items": state.get("confirmation_items", []),
     })
 
@@ -110,9 +143,10 @@ async def human_gate_node(state: TravelState) -> Dict[str, Any]:
         approved = bool(decision)
         note = ""
 
-    logger.info("人工确认结果: approved={}, note={}", approved, note)
+    has_itinerary = bool(state.get("itinerary"))
+    logger.info("人工确认结果: approved={}, has_itinerary={}, note={}", approved, has_itinerary, note)
 
-    if approved:
+    if approved and has_itinerary:
         stamp = (
             "\n\n---\n\n> ✅ **人工确认记录**：以上请求中的敏感操作已由用户确认。\n"
             "> 注意：系统不会代为执行任何资金/账户操作，相关事项请自行办理。\n"
@@ -122,6 +156,15 @@ async def human_gate_node(state: TravelState) -> Dict[str, Any]:
             "confirmation_decision": {"approved": True, "note": note},
             "itinerary": state.get("itinerary", "") + stamp,
             "status": "completed",
+        }
+
+    if approved:
+        # 输入侧拦截被放行：继续完整规划；末端审查不再重复拦输入侧
+        return {
+            "confirmation_decision": {"approved": True, "note": note},
+            "input_confirmed": True,
+            "requires_confirmation": False,
+            "confirmation_items": [],
         }
 
     items = state.get("confirmation_items", []) or ["未明确列出的事项"]
@@ -204,6 +247,7 @@ async def run_travel_agent(
         "requires_confirmation": False,
         "confirmation_items": [],
         "confirmation_decision": {},
+        "input_confirmed": False,
         "status": None,
         "error": None,
     }

@@ -86,66 +86,65 @@ INFO_KEYWORDS = [
 ]
 
 
-def review(user_input: str, itinerary: str) -> Dict[str, Any]:
-    """
-    安全审查纯函数：检测用户输入与行程输出中的高风险内容。
-
-    Returns:
-        {
-            "level": "pass" | "confirmation_required",
-            "passed": bool,                  # True = 无需确认可直接交付
-            "has_warnings": bool,
-            "blocked_keywords": [...],       # 触发确认的原因列表
-            "warnings": [...],               # 事务性提醒
-            "confirmation_items": [...],     # 需人工确认的具体事项
-        }
-    """
-    text_lower = itinerary.lower()
+def review_input(user_input: str) -> Dict[str, Any]:
+    """输入侧审查：用户请求中的敏感凭证与代执行操作。"""
     input_lower = user_input.lower()
 
     blocked: List[str] = []
-    warnings: List[str] = []
     confirmation_items: List[str] = []
 
-    # ============================================================
-    # 1. 用户输入中的敏感凭证 → 需确认
-    # ============================================================
+    # 敏感凭证关键词
     for keyword in SENSITIVE_INFO_KEYWORDS:
         if keyword.lower() in input_lower:
             blocked.append(f"用户输入包含敏感凭证「{keyword}」")
             confirmation_items.append(f"检测到「{keyword}」，为保护隐私请勿向助手提供，已转入人工确认")
 
-    # 1.2 正则匹配敏感号码（短数字如"2天""1000元"天然不满足位数要求）
+    # 敏感号码正则（短数字如"2天""1000元"天然不满足位数要求）
     for pattern, name in SENSITIVE_PATTERNS:
         m = re.search(pattern, user_input)
         if m:
             blocked.append(f"用户输入疑似包含{name}")
             confirmation_items.append(f"检测到疑似「{name}」，已转入人工确认")
 
-    # ============================================================
-    # 2. 用户输入中的资金执行请求 → 需确认
-    # ============================================================
+    # 资金执行请求
     for phrase in MONEY_EXECUTION_PHRASES:
         if phrase in user_input:
             blocked.append(f"用户请求代执行资金操作「{phrase}」")
             confirmation_items.append(f"「{phrase}」属于资金操作，助手不会代为执行")
 
-    # 2.2 敏感账户操作（取消订单/办签证等，本系统无此能力）
+    # 敏感账户操作（取消订单/办签证等，本系统无此能力）
     for phrase in ACCOUNT_ACTION_PHRASES:
         if phrase in user_input:
             blocked.append(f"用户请求代执行账户操作「{phrase}」")
             confirmation_items.append(f"「{phrase}」需用户自行前往对应平台办理，已标记待确认")
 
-    # ============================================================
-    # 3. 行程输出中的越界行为 → 需确认
-    # ============================================================
-    # 3.1 索要敏感凭证
+    blocked = list(dict.fromkeys(blocked))
+    confirmation_items = list(dict.fromkeys(confirmation_items))
+    return {
+        "level": "confirmation_required" if blocked else "pass",
+        "passed": not blocked,
+        "has_warnings": False,
+        "blocked_keywords": blocked,
+        "warnings": [],
+        "confirmation_items": confirmation_items,
+    }
+
+
+def review_output(itinerary: str) -> Dict[str, Any]:
+    """输出侧审查：行程文本中的越界表述与事务性提醒。"""
+    text_lower = itinerary.lower()
+
+    blocked: List[str] = []
+    warnings: List[str] = []
+    confirmation_items: List[str] = []
+
+    # 索要敏感凭证
     for keyword in SENSITIVE_INFO_KEYWORDS:
         if keyword.lower() in text_lower:
             blocked.append(f"行程中索要敏感凭证「{keyword}」")
             confirmation_items.append(f"行程中要求用户提供「{keyword}」，已拦截待确认")
 
-    # 3.2 执行性短语 + 资金动作（如"已为你完成支付"）
+    # 执行性短语 + 资金动作（如"已为你完成支付"）
     has_execution = any(phrase in itinerary for phrase in EXECUTION_PHRASES)
     if has_execution:
         for action in PAYMENT_ACTIONS:
@@ -153,20 +152,16 @@ def review(user_input: str, itinerary: str) -> Dict[str, Any]:
                 blocked.append(f"行程中疑似代用户执行资金操作「{action}」")
                 confirmation_items.append(f"行程中包含代用户「{action}」的表述，需人工确认")
 
-    # ============================================================
-    # 4. 旅行信息性词汇 → 仅提示（不拦截）
-    # ============================================================
+    # 旅行信息性词汇 → 仅提示
     seen_warnings: set = set()
     for keyword in INFO_KEYWORDS:
         if keyword.lower() in text_lower and keyword not in seen_warnings:
             seen_warnings.add(keyword)
             warnings.append(f"行程中提到「{keyword}」相关事项，建议自行确认")
 
-    # 去重保序
     blocked = list(dict.fromkeys(blocked))
     confirmation_items = list(dict.fromkeys(confirmation_items))
     warnings = list(dict.fromkeys(warnings))
-
     return {
         "level": "confirmation_required" if blocked else "pass",
         "passed": not blocked,
@@ -177,17 +172,77 @@ def review(user_input: str, itinerary: str) -> Dict[str, Any]:
     }
 
 
+async def input_guard_node(state: TravelState, config: RunnableConfig) -> Dict[str, Any]:
+    """
+    入口守卫节点：在消耗任何 LLM/API 资源前拦截输入侧风险。
+
+    命中风险时直接路由到 human_gate（fail-fast，不做研究/合成）；
+    通过时透传到偏好收集。行程尚未生成，因此只做输入侧检查。
+    """
+    result = review_input(state.get("user_input", ""))
+    if result["passed"]:
+        return {}
+
+    safety_result = {
+        **result,
+        "summary": _generate_summary(result),
+    }
+    logger.info(
+        "入口守卫拦截: {} 项需确认 (fail-fast，跳过规划流程)",
+        len(result["blocked_keywords"]),
+    )
+    return {
+        "safety_result": safety_result,
+        "requires_confirmation": True,
+        "confirmation_items": result["confirmation_items"],
+    }
+
+
+def review(user_input: str, itinerary: str) -> Dict[str, Any]:
+    """双侧合并审查（输入侧 + 输出侧），供测试与独立调用使用。"""
+
+    def _merge(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "level": "confirmation_required" if (a["blocked_keywords"] or b["blocked_keywords"]) else "pass",
+            "passed": a["passed"] and b["passed"],
+            "has_warnings": a["has_warnings"] or b["has_warnings"],
+            "blocked_keywords": a["blocked_keywords"] + b["blocked_keywords"],
+            "warnings": a["warnings"] + b["warnings"],
+            "confirmation_items": a["confirmation_items"] + b["confirmation_items"],
+        }
+
+    return _merge(review_input(user_input), review_output(itinerary))
+
+
 async def safety_review_node(state: TravelState, config: RunnableConfig) -> Dict[str, Any]:
     """
-    节点：安全审查。
+    节点：安全审查（流程末端）。
 
-    同时检查用户输入和行程输出，结果写入 safety_result；
-    有需确认项时置 requires_confirmation=True，由 human_gate 节点中断等待人工决定。
+    输入侧已在入口 input_guard 拦截；此处复查行程输出侧，
+    若输入曾被人工确认通过（input_confirmed=True）则不再重复拦截输入侧。
     """
-    result = review(
-        user_input=state.get("user_input", ""),
-        itinerary=state.get("itinerary", ""),
+    input_side = (
+        review_input(state.get("user_input", ""))
+        if not state.get("input_confirmed")
+        else {
+            "passed": True, "has_warnings": False, "blocked_keywords": [],
+            "warnings": [], "confirmation_items": [],
+        }
     )
+    output_side = review_output(state.get("itinerary", ""))
+
+    blocked = input_side["blocked_keywords"] + output_side["blocked_keywords"]
+    warnings = input_side["warnings"] + output_side["warnings"]
+    items = input_side["confirmation_items"] + output_side["confirmation_items"]
+
+    result = {
+        "level": "confirmation_required" if blocked else "pass",
+        "passed": not blocked,
+        "has_warnings": len(warnings) > 0,
+        "blocked_keywords": blocked,
+        "warnings": warnings,
+        "confirmation_items": items,
+    }
 
     safety_result = {
         **result,
@@ -197,14 +252,14 @@ async def safety_review_node(state: TravelState, config: RunnableConfig) -> Dict
     logger.info(
         "安全审查完成: level={}, blocked={}, warnings={}",
         safety_result["level"],
-        len(result["blocked_keywords"]),
-        len(result["warnings"]),
+        len(blocked),
+        len(warnings),
     )
 
     return {
         "safety_result": safety_result,
         "requires_confirmation": not result["passed"],
-        "confirmation_items": result["confirmation_items"],
+        "confirmation_items": items,
     }
 
 

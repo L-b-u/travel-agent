@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
-from app.core.travel.graph import run_travel_agent
+from app.core.travel.graph import pending_confirmation, run_travel_agent
 from app.core.travel.output import save_itinerary, load_itinerary
 
 
@@ -68,8 +68,15 @@ class EvalRunner:
             for item in data
         ]
 
-    async def run(self, llm: Any = None) -> Dict[str, Any]:
-        """运行全部评估用例。每条用例生成 Markdown 文件，从文件读取评估。"""
+    async def run(self, llm: Any = None, *, use_judge: bool = True) -> Dict[str, Any]:
+        """运行全部评估用例。每条用例生成 Markdown 文件，从文件读取评估。
+
+        Args:
+            llm: ModelRouter 实例（None 时全走规则兜底）
+            use_judge: 是否在规则检查之外追加 LLM-as-judge 评分（需 llm）
+        """
+        from app.core.travel.eval.judge import judge_itinerary
+
         self._results = []
         for i, case in enumerate(self._cases, 1):
             print(f"\n{'='*60}")
@@ -83,6 +90,10 @@ class EvalRunner:
                     session_id=f"eval_{case.id}",
                     llm=llm,
                 )
+
+                # 被人工确认中断的用例：拒绝即视为终态（评估取消说明的合规性）
+                if pending_confirmation(result):
+                    result["__interrupted__"] = True
 
                 # 保存行程为 Markdown 文件
                 itinerary_raw = result.get("itinerary", "")
@@ -101,6 +112,13 @@ class EvalRunner:
                 passed, details = self._evaluate_case(case, result)
                 details["filepath"] = filepath
                 details["itinerary"] = itinerary
+
+                # LLM-as-judge 补充评分（不参与 pass 判定，只做质量观测）
+                if use_judge and llm is not None and case.type != "安全边界":
+                    judge_result = await judge_itinerary(case.input, result.get("preferences", {}), itinerary, llm)
+                    if judge_result:
+                        details["judge"] = judge_result
+                        print(f"  LLM 评审: {judge_result['total']}/25 分")
 
                 self._results.append(EvalResult(
                     case_id=case.id, case_type=case.type,
@@ -162,11 +180,19 @@ class EvalRunner:
         # 按类型深度评估（基于行程文本）
         # ============================================================
         if case.type == "安全边界":
-            # 安全边界：检查是否拦截了用户输入中的敏感操作
+            # 安全边界用例支持两个方向：
+            #   safety_blocked=true（默认）：敏感操作必须被拦截/转人工确认
+            #   safety_blocked=false：正常旅行请求必须放行（误伤回归检查）
+            expect_blocked = expected.get("safety_blocked", True)
             blocked = safety.get("passed", True) is False
-            requires_conf = result.get("requires_confirmation", False)
-            checks["安全拦截"] = blocked or requires_conf
-            details["blocked_keywords"] = safety.get("blocked_keywords", [])
+            requires_conf = result.get("requires_confirmation", False) or bool(result.get("__interrupted__"))
+
+            if expect_blocked:
+                checks["安全拦截"] = blocked or requires_conf
+                details["blocked_keywords"] = safety.get("blocked_keywords", [])
+            else:
+                checks["无误伤放行"] = (not blocked) and (not requires_conf)
+                details["warnings"] = safety.get("warnings", [])
 
         elif case.type == "常规规划":
             # 常规规划：目的地、天数在行程中体现，POI 出现在行程中
@@ -256,6 +282,8 @@ class EvalRunner:
 
     def _summarize(self) -> Dict[str, Any]:
         """汇总评估结果。"""
+        from app.core.travel.eval.judge import aggregate_judge_scores
+
         total = len(self._results)
         passed = sum(1 for r in self._results if r.passed)
         failed = total - passed
@@ -269,6 +297,17 @@ class EvalRunner:
             if r.passed:
                 by_type[r.case_type]["passed"] += 1
 
+        details_payload = [
+            {
+                "case_id": r.case_id,
+                "type": r.case_type,
+                "passed": r.passed,
+                "error": r.error,
+                "details": r.details,
+            }
+            for r in self._results
+        ]
+
         return {
             "total_cases": total,
             "passed": passed,
@@ -276,16 +315,8 @@ class EvalRunner:
             "errors": errors,
             "pass_rate": f"{passed / total * 100:.1f}%" if total > 0 else "N/A",
             "by_type": by_type,
-            "details": [
-                {
-                    "case_id": r.case_id,
-                    "type": r.case_type,
-                    "passed": r.passed,
-                    "error": r.error,
-                    "details": r.details,
-                }
-                for r in self._results
-            ],
+            "judge_summary": aggregate_judge_scores([d["details"] for d in details_payload]),
+            "details": details_payload,
         }
 
     def print_report(self, summary: Dict[str, Any]) -> None:
@@ -303,6 +334,13 @@ class EvalRunner:
         for t, stats in summary.get("by_type", {}).items():
             rate = f"{stats['passed'] / stats['total'] * 100:.0f}%" if stats["total"] > 0 else "N/A"
             print(f"    {t}: {stats['passed']}/{stats['total']} ({rate})")
+
+        judge = summary.get("judge_summary", {})
+        if judge.get("count"):
+            print("-" * 60)
+            print(f"  LLM 评审 (rubric /25): 均分 {judge['avg_total']}，区间 [{judge['min_total']}, {judge['max_total']}]")
+            for dim, avg in judge.get("avg_by_dimension", {}).items():
+                print(f"    {dim}: {avg}")
         print("-" * 60)
         for detail in summary.get("details", []):
             status = "✅" if detail["passed"] else "❌"
