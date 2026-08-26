@@ -10,9 +10,10 @@ from __future__ import annotations
 import math
 from typing import Any
 
-import httpx
 from langchain_core.tools import tool
 from loguru import logger
+
+from app.core.travel.tools._http import make_client
 
 
 def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -110,7 +111,7 @@ async def _amap_route(
         "extensions": "base",
     }
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with make_client(timeout=15.0) as client:
         resp = await client.get(url, params=params)
         resp.raise_for_status()
         data = resp.json()

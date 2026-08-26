@@ -60,6 +60,13 @@ class Settings(BaseSettings):
         default="",
         description="高德地图 API Key（免费获取：https://lbs.amap.com/）",
     )
+    httpx_trust_env: bool = Field(
+        default=False,
+        description=(
+            "外部 HTTP 工具（高德/Open-Meteo）是否走系统代理。"
+            "默认 False 直连：国内 API 走本机代理易超时；需代理访问外网 API 时改 true"
+        ),
+    )
     travel_weather_enabled: bool = Field(
         default=True,
         description="是否启用天气查询",

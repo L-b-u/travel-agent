@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
-import httpx
 from langchain_core.tools import tool
 from loguru import logger
 
+from app.core.travel.tools._http import make_client
 from app.core.travel.tools._poi_data import FALLBACK_POIS
 
 # 高德搜索关键词映射（将用户兴趣映射为高德搜索关键词）
@@ -114,7 +114,7 @@ async def _search_via_amap(
     headers = {"User-Agent": "TravelAgent/1.0 (educational-project)"}
 
     # 10s 超时：搜索是 Agent 工具调用链的一环，快速失败好过长时间挂起
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with make_client(timeout=10.0) as client:
         for keyword in keywords_list:
             params = {
                 "keywords": keyword,

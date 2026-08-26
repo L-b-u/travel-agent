@@ -11,9 +11,10 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Any
 
-import httpx
 from langchain_core.tools import tool
 from loguru import logger
+
+from app.core.travel.tools._http import make_client
 
 # 天气代码映射
 WMO_CODES: dict[int, str] = {
@@ -93,7 +94,7 @@ async def get_weather_forecast(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with make_client(timeout=15.0) as client:
             resp = await client.get(url, params=params)
             resp.raise_for_status()
             data = resp.json()
