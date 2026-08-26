@@ -59,7 +59,7 @@ async def estimate_route(
             result["destination"] = destination.get("name", "")
             return result
         except Exception as e:
-            logger.warning("高德路线规划失败，降级为直线距离: {}", e)
+            logger.warning("高德路线规划失败，降级为直线距离: {}: {}", type(e).__name__, e)
 
     # 降级：直线距离估算
     distance = _haversine(o_lat, o_lon, d_lat, d_lon)
